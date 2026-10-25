@@ -1,0 +1,406 @@
+import XCTest
+import ApplicationServices
+@testable import Diction
+
+final class TextPasterTests: XCTestCase {
+    func testContainsLikelyPasteTargetAcceptsTerminalStyleFocusedTextArea() {
+        let snapshot = TextPaster.AccessibilitySnapshot(
+            role: kAXTextAreaRole as String,
+            isEnabled: nil,
+            isEditable: nil,
+            isFocused: true,
+            hasSelectedTextRange: true,
+            valueIsSettable: false
+        )
+
+        XCTAssertTrue(TextPaster.containsLikelyPasteTarget(startingAt: snapshot))
+    }
+
+    func testContainsLikelyPasteTargetAcceptsWindowWithFocusedTextDescendant() {
+        let snapshot = TextPaster.AccessibilitySnapshot(
+            role: kAXWindowRole as String,
+            isEnabled: true,
+            isEditable: nil,
+            isFocused: false,
+            hasSelectedTextRange: false,
+            valueIsSettable: false,
+            children: [
+                TextPaster.AccessibilitySnapshot(
+                    role: kAXGroupRole as String,
+                    isEnabled: nil,
+                    isEditable: nil,
+                    isFocused: false,
+                    hasSelectedTextRange: false,
+                    valueIsSettable: false,
+                    children: [
+                        TextPaster.AccessibilitySnapshot(
+                            role: kAXTextAreaRole as String,
+                            isEnabled: nil,
+                            isEditable: nil,
+                            isFocused: true,
+                            hasSelectedTextRange: true,
+                            valueIsSettable: false
+                        )
+                    ]
+                )
+            ]
+        )
+
+        XCTAssertTrue(TextPaster.containsLikelyPasteTarget(startingAt: snapshot))
+    }
+
+    func testContainsLikelyPasteTargetRejectsCodexStyleGroupedWindowWithoutFocusedInput() {
+        let snapshot = TextPaster.AccessibilitySnapshot(
+            role: kAXWindowRole as String,
+            isEnabled: true,
+            isEditable: nil,
+            isFocused: false,
+            hasSelectedTextRange: false,
+            valueIsSettable: false,
+            children: [
+                TextPaster.AccessibilitySnapshot(
+                    role: kAXGroupRole as String,
+                    isEnabled: nil,
+                    isEditable: nil,
+                    isFocused: false,
+                    hasSelectedTextRange: true,
+                    valueIsSettable: false,
+                    children: [
+                        TextPaster.AccessibilitySnapshot(
+                            role: kAXGroupRole as String,
+                            isEnabled: nil,
+                            isEditable: nil,
+                            isFocused: false,
+                            hasSelectedTextRange: true,
+                            valueIsSettable: false
+                        )
+                    ]
+                )
+            ]
+        )
+
+        XCTAssertFalse(TextPaster.containsLikelyPasteTarget(startingAt: snapshot))
+    }
+
+    func testContainsLikelyPasteTargetAcceptsCodexStyleGroupedEditorWithSettableValue() {
+        let snapshot = TextPaster.AccessibilitySnapshot(
+            role: kAXWindowRole as String,
+            isEnabled: true,
+            isEditable: nil,
+            isFocused: false,
+            hasSelectedTextRange: false,
+            valueIsSettable: false,
+            children: [
+                TextPaster.AccessibilitySnapshot(
+                    role: kAXGroupRole as String,
+                    isEnabled: true,
+                    isEditable: nil,
+                    isFocused: false,
+                    hasSelectedTextRange: true,
+                    valueIsSettable: true,
+                    children: [
+                        TextPaster.AccessibilitySnapshot(
+                            role: kAXGroupRole as String,
+                            isEnabled: true,
+                            isEditable: nil,
+                            isFocused: false,
+                            hasSelectedTextRange: true,
+                            valueIsSettable: true
+                        )
+                    ]
+                )
+            ]
+        )
+
+        XCTAssertTrue(TextPaster.containsLikelyPasteTarget(startingAt: snapshot))
+    }
+
+    func testContainsLikelyPasteTargetRejectsFocusedCodexBackgroundGroupWithoutSettableValue() {
+        let snapshot = TextPaster.AccessibilitySnapshot(
+            role: kAXGroupRole as String,
+            isEnabled: true,
+            isEditable: nil,
+            isFocused: true,
+            hasSelectedTextRange: true,
+            valueIsSettable: false
+        )
+
+        XCTAssertFalse(TextPaster.containsLikelyPasteTarget(startingAt: snapshot))
+    }
+
+    func testContainsLikelyPasteTargetRejectsWindowWithoutEditableSignals() {
+        let snapshot = TextPaster.AccessibilitySnapshot(
+            role: kAXWindowRole as String,
+            isEnabled: true,
+            isEditable: nil,
+            isFocused: false,
+            hasSelectedTextRange: false,
+            valueIsSettable: false,
+            children: [
+                TextPaster.AccessibilitySnapshot(
+                    role: kAXButtonRole as String,
+                    isEnabled: true,
+                    isEditable: nil,
+                    isFocused: false,
+                    hasSelectedTextRange: false,
+                    valueIsSettable: false
+                )
+            ]
+        )
+
+        XCTAssertFalse(TextPaster.containsLikelyPasteTarget(startingAt: snapshot))
+    }
+
+    func testSaveAndRestoreClipboard() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        let paster = TextPaster(pasteboard: pasteboard)
+        pasteboard.clearContents()
+        pasteboard.setString("original content", forType: .string)
+
+        let saved = paster.saveClipboard()
+        XCTAssertNotNil(saved)
+
+        pasteboard.clearContents()
+        pasteboard.setString("new content", forType: .string)
+
+        paster.restoreClipboard(saved!)
+        XCTAssertEqual(pasteboard.string(forType: .string), "original content")
+
+        pasteboard.releaseGlobally()
+    }
+
+    func testPasteLeavesTranscriptOnClipboardWhenFocusedInputIsUnavailable() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("original content", forType: .string)
+
+        var scheduledActions = 0
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { false },
+            frontmostAppHasPasteMenuItem: { false },
+            prepareCommandV: {
+                XCTFail("prepareCommandV should not be called when no focused input is available")
+                return nil
+            },
+            schedule: { _, _ in
+                scheduledActions += 1
+            }
+        )
+
+        let result = paster.paste(text: "new content")
+
+        XCTAssertEqual(result, .copiedToClipboard)
+        XCTAssertEqual(pasteboard.string(forType: .string), "new content")
+        XCTAssertEqual(scheduledActions, 0)
+
+        pasteboard.releaseGlobally()
+    }
+
+    func testPasteSchedulesCommandVAndRestoresClipboardWhenFocusedInputIsAvailable() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("original content", forType: .string)
+
+        var scheduledActions: [() -> Void] = []
+        var postedCommandV = 0
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { true },
+            prepareCommandV: {
+                { postedCommandV += 1 }
+            },
+            schedule: { _, action in
+                scheduledActions.append(action)
+            },
+            characterBeforeCursor: { nil }
+        )
+
+        let result = paster.paste(text: "new content")
+
+        XCTAssertEqual(result, .pasted)
+        XCTAssertEqual(pasteboard.string(forType: .string), "new content")
+        XCTAssertEqual(postedCommandV, 0)
+        XCTAssertEqual(scheduledActions.count, 1)
+
+        let postPasteAction = scheduledActions.removeFirst()
+        postPasteAction()
+
+        XCTAssertEqual(postedCommandV, 1)
+        XCTAssertEqual(scheduledActions.count, 1)
+        XCTAssertEqual(pasteboard.string(forType: .string), "new content")
+
+        let restoreClipboardAction = scheduledActions.removeFirst()
+        restoreClipboardAction()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "original content")
+
+        pasteboard.releaseGlobally()
+    }
+
+    func testLeadingSpaceOnlyRightAfterTextAndNotBeforePunctuation() {
+        XCTAssertEqual(TextPaster.withLeadingSpace("Okay", after: "."), " Okay")
+        XCTAssertEqual(TextPaster.withLeadingSpace("Okay", after: "e"), " Okay")
+        XCTAssertEqual(TextPaster.withLeadingSpace("Okay", after: nil), "Okay", "start of the field")
+        XCTAssertEqual(TextPaster.withLeadingSpace("Okay", after: " "), "Okay")
+        XCTAssertEqual(TextPaster.withLeadingSpace("Okay", after: "\n"), "Okay")
+        XCTAssertEqual(TextPaster.withLeadingSpace("Okay", after: "("), "Okay")
+        XCTAssertEqual(TextPaster.withLeadingSpace("„Hallo“", after: "e"), " „Hallo“", "a quote the dictation opens")
+        XCTAssertEqual(TextPaster.withLeadingSpace(", genau.", after: "e"), ", genau.")
+        XCTAssertEqual(TextPaster.withLeadingSpace(" Okay", after: "e"), " Okay", "never two spaces")
+    }
+
+    func testPasteAddsSpaceAfterTextButClipboardFallbackStaysPlain() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        var canPaste = true
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { canPaste },
+            frontmostAppHasPasteMenuItem: { false },
+            prepareCommandV: { {} },
+            schedule: { _, _ in },
+            characterBeforeCursor: { "." }
+        )
+
+        XCTAssertEqual(paster.paste(text: "Okay"), .pasted)
+        XCTAssertEqual(pasteboard.string(forType: .string), " Okay")
+
+        canPaste = false
+        XCTAssertEqual(paster.paste(text: "Okay"), .copiedToClipboard)
+        XCTAssertEqual(pasteboard.string(forType: .string), "Okay")
+    }
+
+    func testBackToBackDictationsGetASpaceWhenTheAppWontSayWhatIsBeforeTheCursor() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        var scheduled: [() -> Void] = []
+        var app = PasteTargetApplication(bundleIdentifier: "com.anthropic.claudefordesktop", displayName: "Claude")
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { true },
+            prepareCommandV: { {} },
+            pasteSessionProvider: { _, _ in nil },
+            frontmostApplicationProvider: { app },
+            schedule: { _, action in scheduled.append(action) },
+            characterBeforeCursor: { nil }  // like the Claude app: Accessibility doesn't say
+        )
+        func pasteAndFinish(_ text: String) -> String? {
+            XCTAssertEqual(paster.paste(text: text), .pasted)
+            let pasted = pasteboard.string(forType: .string)
+            while !scheduled.isEmpty { scheduled.removeFirst()() }
+            return pasted
+        }
+
+        XCTAssertEqual(pasteAndFinish("This is a test."), "This is a test.", "nothing known before the first one")
+        XCTAssertEqual(pasteAndFinish("And it works."), " And it works.")
+        app = PasteTargetApplication(bundleIdentifier: "com.apple.Notes", displayName: "Notes")
+        XCTAssertEqual(pasteAndFinish("New app."), "New app.", "the last paste went elsewhere")
+    }
+
+    func testPasteSchedulesCommandVForAlwaysAllowedApplication() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        var scheduledActions: [() -> Void] = []
+        var postedCommandV = 0
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { false },
+            frontmostAppHasPasteMenuItem: { false },
+            prepareCommandV: { { postedCommandV += 1 } },
+            frontmostApplicationProvider: {
+                PasteTargetApplication(bundleIdentifier: "com.openai.chat", displayName: "ChatGPT")
+            },
+            schedule: { _, action in scheduledActions.append(action) }
+        )
+        paster.configureAlwaysAllowedApplications { $0 == "com.openai.chat" }
+
+        XCTAssertEqual(paster.paste(text: "hello"), .pasted)
+        XCTAssertEqual(scheduledActions.count, 1)
+        scheduledActions.removeFirst()()
+        XCTAssertEqual(postedCommandV, 1)
+    }
+
+    func testRetryLastClipboardPasteRunsAfterApplicationBecomesAllowed() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        var isAllowed = false
+        var scheduledActions: [() -> Void] = []
+        let target = PasteTargetApplication(
+            bundleIdentifier: "com.openai.chat",
+            displayName: "ChatGPT"
+        )
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { false },
+            frontmostAppHasPasteMenuItem: { false },
+            prepareCommandV: { {} },
+            frontmostApplicationProvider: { target },
+            schedule: { _, action in scheduledActions.append(action) }
+        )
+        paster.configureAlwaysAllowedApplications { _ in isAllowed }
+
+        XCTAssertEqual(paster.paste(text: "hello"), .copiedToClipboard)
+        isAllowed = true
+        XCTAssertEqual(paster.retryLastClipboardPaste(), .pasted)
+        XCTAssertEqual(scheduledActions.count, 1)
+    }
+
+    func testPasteCapturesSessionAfterPasteDelay() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("original content", forType: .string)
+
+        var currentSnapshot = "before paste"
+        var scheduledActions: [() -> Void] = []
+        let expectation = expectation(description: "paste session captured")
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { true },
+            prepareCommandV: { {} },
+            pasteSessionProvider: { text, date in
+            PasteSession(
+                pastedText: text,
+                pastedAt: date,
+                frontmostAppBundleIdentifier: "com.example.app",
+                frontmostWindowID: 42,
+                frontmostWindowFrame: nil,
+                focusedElementFrame: nil,
+                focusedElementText: currentSnapshot
+            )
+            },
+            schedule: { _, action in
+                scheduledActions.append(action)
+            }
+        )
+        paster.onPaste = { session in
+            XCTAssertEqual(session.focusedElementText, "after paste")
+            expectation.fulfill()
+        }
+
+        let result = paster.paste(text: "Jesse")
+        XCTAssertEqual(result, .pasted)
+        XCTAssertEqual(scheduledActions.count, 1)
+
+        currentSnapshot = "after paste"
+
+        let postPasteAction = scheduledActions.removeFirst()
+        postPasteAction()
+
+        XCTAssertEqual(scheduledActions.count, 1)
+
+        let captureSessionAction = scheduledActions.removeFirst()
+        captureSessionAction()
+
+        wait(for: [expectation], timeout: 1)
+        pasteboard.releaseGlobally()
+    }
+
+    func testPasteMenuItemDetectsCommandV() {
+        // isPasteMenuItem is tested indirectly through frontmostAppHasPasteMenuItem.
+        // The method checks for Cmd+V (AXMenuItemCmdChar == "v", modifiers == 0).
+        // In CI, there may not be a frontmost app with a menu bar, so we verify
+        // the method returns a Bool without crashing.
+        _ = TextPaster.frontmostAppHasPasteMenuItem()
+    }
+}

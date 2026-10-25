@@ -1,0 +1,540 @@
+import Cocoa
+import ApplicationServices
+import CoreGraphics
+
+/// Represents a saved clipboard state, preserving all pasteboard items with all type representations.
+struct ClipboardState {
+    let data: [[(NSPasteboard.PasteboardType, Data)]]
+}
+
+enum PasteResult: Equatable {
+    case pasted
+    case copiedToClipboard
+}
+
+struct PasteTargetApplication: Codable, Equatable, Identifiable {
+    let bundleIdentifier: String
+    let displayName: String
+
+    var id: String { bundleIdentifier }
+}
+
+/// Pastes transcribed text into the focused text field by simulating Cmd+V.
+/// Saves and restores the clipboard around the paste operation to avoid clobbering user data.
+/// Requires Accessibility permission for CGEvent posting.
+final class TextPaster {
+    typealias PasteSessionProvider = @Sendable (String, Date) -> PasteSession?
+    typealias PasteScheduler = (TimeInterval, @escaping () -> Void) -> Void
+    typealias FrontmostApplicationProvider = () -> PasteTargetApplication?
+
+    struct AccessibilitySnapshot {
+        let role: String?
+        let isEnabled: Bool?
+        let isEditable: Bool?
+        let isFocused: Bool?
+        let hasSelectedTextRange: Bool
+        let valueIsSettable: Bool
+        let children: [AccessibilitySnapshot]
+
+        init(
+            role: String?,
+            isEnabled: Bool?,
+            isEditable: Bool?,
+            isFocused: Bool?,
+            hasSelectedTextRange: Bool,
+            valueIsSettable: Bool,
+            children: [AccessibilitySnapshot] = []
+        ) {
+            self.role = role
+            self.isEnabled = isEnabled
+            self.isEditable = isEditable
+            self.isFocused = isFocused
+            self.hasSelectedTextRange = hasSelectedTextRange
+            self.valueIsSettable = valueIsSettable
+            self.children = children
+        }
+    }
+
+    private struct PasteTargetAttributes {
+        let role: String?
+        let isEnabled: Bool?
+        let isEditable: Bool?
+        let isFocused: Bool?
+        let hasSelectedTextRange: Bool
+        let valueIsSettable: Bool
+    }
+
+    // MARK: - Timing Constants
+
+    /// Delay after writing text to clipboard before simulating Cmd+V.
+    static let preKeystrokeDelay: TimeInterval = 0.05
+
+    /// Delay after simulating Cmd+V before restoring the original clipboard.
+    static let postKeystrokeDelay: TimeInterval = 0.1
+
+    // MARK: - Virtual Key Codes
+
+    private static let vKeyCode: CGKeyCode = 0x09
+    var onPaste: ((PasteSession) -> Void)?
+    var onPasteStart: (() -> Void)?
+    var onPasteEnd: (() -> Void)?
+    private(set) var lastPasteTargetApplication: PasteTargetApplication?
+
+    private let pasteSessionProvider: PasteSessionProvider
+    private let pasteboard: NSPasteboard
+    private let canPasteIntoFocusedElement: () -> Bool
+    private let frontmostAppHasPasteMenuItem: () -> Bool
+    private let prepareCommandV: () -> (() -> Void)?
+    private let schedule: PasteScheduler
+    private let frontmostApplicationProvider: FrontmostApplicationProvider
+    private let characterBeforeCursor: () -> Character?
+    // How the last paste ended and where it went, for apps whose Accessibility doesn't say what's before the
+    // cursor: until you type or click, the cursor is still right after it (see watchForInputAfterPaste).
+    private var lastPaste: (bundleIdentifier: String, lastCharacter: Character)?
+    private var inputMonitor: Any?
+    private var isApplicationAlwaysAllowed: (String) -> Bool = { _ in false }
+
+    init(
+        pasteboard: NSPasteboard = .general,
+        canPasteIntoFocusedElement: @escaping () -> Bool = { TextPaster.defaultCanPasteIntoFocusedElement() },
+        frontmostAppHasPasteMenuItem: @escaping () -> Bool = TextPaster.frontmostAppHasPasteMenuItem,
+        prepareCommandV: @escaping () -> (() -> Void)? = { TextPaster.defaultCommandVPasteAction() },
+        pasteSessionProvider: @escaping PasteSessionProvider = { text, date in
+            FocusedElementLocator().capturePasteSession(for: text, at: date)
+        },
+        frontmostApplicationProvider: @escaping FrontmostApplicationProvider = TextPaster.frontmostApplication,
+        schedule: @escaping PasteScheduler = { delay, action in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
+        },
+        characterBeforeCursor: @escaping () -> Character? = { FocusedElementLocator().characterBeforeInsertionPoint() }
+    ) {
+        self.pasteboard = pasteboard
+        self.characterBeforeCursor = characterBeforeCursor
+        self.canPasteIntoFocusedElement = canPasteIntoFocusedElement
+        self.frontmostAppHasPasteMenuItem = frontmostAppHasPasteMenuItem
+        self.prepareCommandV = prepareCommandV
+        self.pasteSessionProvider = pasteSessionProvider
+        self.frontmostApplicationProvider = frontmostApplicationProvider
+        self.schedule = schedule
+    }
+
+    func configureAlwaysAllowedApplications(_ isAllowed: @escaping (String) -> Bool) {
+        isApplicationAlwaysAllowed = isAllowed
+    }
+
+    @discardableResult
+    func retryLastClipboardPaste() -> PasteResult? {
+        guard let lastPasteTargetApplication,
+              frontmostApplicationProvider()?.bundleIdentifier == lastPasteTargetApplication.bundleIdentifier,
+              isApplicationAlwaysAllowed(lastPasteTargetApplication.bundleIdentifier),
+              let text = pasteboard.string(forType: .string) else {
+            return nil
+        }
+
+        return paste(text: text)
+    }
+
+    // MARK: - Clipboard Operations
+
+    /// Saves all pasteboard items with all their type representations.
+    /// - Returns: A `ClipboardState` capturing the full clipboard contents, or `nil` if the clipboard is empty.
+    func saveClipboard() -> ClipboardState? {
+        guard let items = pasteboard.pasteboardItems, !items.isEmpty else {
+            return nil
+        }
+
+        var allItems: [[(NSPasteboard.PasteboardType, Data)]] = []
+        for item in items {
+            var itemData: [(NSPasteboard.PasteboardType, Data)] = []
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    itemData.append((type, data))
+                }
+            }
+            if !itemData.isEmpty {
+                allItems.append(itemData)
+            }
+        }
+
+        return allItems.isEmpty ? nil : ClipboardState(data: allItems)
+    }
+
+    /// Restores a previously saved clipboard state.
+    /// All `NSPasteboardItem` objects are collected first, then written in a single `writeObjects` call.
+    /// - Parameter state: The clipboard state to restore.
+    func restoreClipboard(_ state: ClipboardState) {
+        pasteboard.clearContents()
+
+        var pasteboardItems: [NSPasteboardItem] = []
+        for itemData in state.data {
+            let item = NSPasteboardItem()
+            for (type, data) in itemData {
+                item.setData(data, forType: type)
+            }
+            pasteboardItems.append(item)
+        }
+
+        pasteboard.writeObjects(pasteboardItems)
+    }
+
+    // MARK: - Paste Flow
+
+    /// Pastes the given text into the currently focused text field.
+    ///
+    /// Flow:
+    /// 1. Save current clipboard
+    /// 2. Write text to clipboard
+    /// 3. After a short delay, simulate Cmd+V
+    /// 4. After another delay, restore the original clipboard
+    ///
+    /// - Parameter text: The text to paste.
+    func paste(text: String) -> PasteResult {
+        onPasteStart?()
+        let targetApplication = frontmostApplicationProvider()
+        lastPasteTargetApplication = targetApplication
+        let savedState = saveClipboard()
+
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        let isAlwaysAllowed = targetApplication.map {
+            isApplicationAlwaysAllowed($0.bundleIdentifier)
+        } ?? false
+        guard canPasteIntoFocusedElement() || frontmostAppHasPasteMenuItem() || isAlwaysAllowed,
+              let postCommandV = prepareCommandV() else {
+            onPasteEnd?()
+            return .copiedToClipboard
+        }
+
+        // only when pasting into the field, so the clipboard fallback above keeps the plain text
+        watchForInputAfterPaste()
+        let before = characterBeforeCursor() ?? lastPaste.flatMap {
+            $0.bundleIdentifier == targetApplication?.bundleIdentifier ? $0.lastCharacter : nil
+        }
+        let pastedText = Self.withLeadingSpace(text, after: before)
+        if pastedText != text {
+            pasteboard.clearContents()
+            pasteboard.setString(pastedText, forType: .string)
+        }
+
+        schedule(Self.preKeystrokeDelay) { [weak self] in
+            postCommandV()
+
+            self?.schedule(Self.postKeystrokeDelay) { [weak self] in
+                guard let self else { return }
+
+                if let pasteSession = self.pasteSessionProvider(pastedText, Date()) {
+                    self.onPaste?(pasteSession)
+                }
+
+                if let savedState = savedState {
+                    self.restoreClipboard(savedState)
+                }
+                // set after our own Cmd+V went through, so that keystroke doesn't erase it again
+                if let bundleIdentifier = targetApplication?.bundleIdentifier, let last = pastedText.last {
+                    self.lastPaste = (bundleIdentifier, last)
+                } else {
+                    self.lastPaste = nil
+                }
+
+                self.onPasteEnd?()
+            }
+        }
+
+        return .pasted
+    }
+
+    /// Typing or clicking anywhere may move the cursor, so the remembered last paste is forgotten.
+    private func watchForInputAfterPaste() {
+        guard inputMonitor == nil else { return }
+        inputMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            self?.lastPaste = nil
+        }
+    }
+
+    /// Spacing: a dictation pasted right after a word or punctuation gets one space in front, so
+    /// "...number one." followed by "Okay" reads "...number one. Okay". None at the start of a field, after a
+    /// space or newline, after an opening bracket or quote, or when the dictation starts with punctuation.
+    static func withLeadingSpace(_ text: String, after previous: Character?) -> String {
+        guard let previous, !previous.isWhitespace, !"([{\"'“‘„".contains(previous),
+              let first = text.first, !first.isWhitespace, !".,;:!?)]}".contains(first) else {
+            return text
+        }
+        return " " + text
+    }
+
+    private static func frontmostApplication() -> PasteTargetApplication? {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bundleIdentifier = app.bundleIdentifier,
+              bundleIdentifier != Bundle.main.bundleIdentifier else {
+            return nil
+        }
+
+        return PasteTargetApplication(
+            bundleIdentifier: bundleIdentifier,
+            displayName: app.localizedName ?? bundleIdentifier
+        )
+    }
+
+    // MARK: - Accessibility Preflight
+
+    private static func defaultCanPasteIntoFocusedElement() -> Bool {
+        FocusedElementLocator().canPasteIntoFocusedElement()
+    }
+
+    static func containsLikelyPasteTarget(
+        startingAt snapshot: AccessibilitySnapshot,
+        maxDepth: Int = 12
+    ) -> Bool {
+        containsLikelyPasteTarget(
+            startingAt: snapshot,
+            maxDepth: maxDepth,
+            attributesProvider: {
+                PasteTargetAttributes(
+                    role: $0.role,
+                    isEnabled: $0.isEnabled,
+                    isEditable: $0.isEditable,
+                    isFocused: $0.isFocused,
+                    hasSelectedTextRange: $0.hasSelectedTextRange,
+                    valueIsSettable: $0.valueIsSettable
+                )
+            },
+            childrenProvider: { $0.children }
+        )
+    }
+
+    private static func containsLikelyPasteTarget<Element>(
+        startingAt element: Element,
+        maxDepth: Int = 12,
+        hasFocusContext: Bool = false,
+        attributesProvider: (Element) -> PasteTargetAttributes,
+        childrenProvider: (Element) -> [Element]
+    ) -> Bool {
+        guard maxDepth >= 0 else {
+            return false
+        }
+
+        let currentAttributes = attributesProvider(element)
+        let currentHasFocusContext = hasFocusContext || currentAttributes.isFocused == true
+
+        if isLikelyPasteTarget(currentAttributes, hasFocusContext: currentHasFocusContext) {
+            return true
+        }
+
+        guard maxDepth > 0 else {
+            return false
+        }
+
+        let children = childrenProvider(element)
+        let focusedChildren = children.filter { attributesProvider($0).isFocused == true }
+        for child in focusedChildren {
+            if containsLikelyPasteTarget(
+                startingAt: child,
+                maxDepth: maxDepth - 1,
+                hasFocusContext: currentHasFocusContext,
+                attributesProvider: attributesProvider,
+                childrenProvider: childrenProvider
+            ) {
+                return true
+            }
+        }
+
+        for child in children where attributesProvider(child).isFocused != true {
+            if containsLikelyPasteTarget(
+                startingAt: child,
+                maxDepth: maxDepth - 1,
+                hasFocusContext: currentHasFocusContext,
+                attributesProvider: attributesProvider,
+                childrenProvider: childrenProvider
+            ) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private static func isLikelyPasteTarget(
+        _ attributes: PasteTargetAttributes,
+        hasFocusContext: Bool
+    ) -> Bool {
+        guard attributes.isEnabled ?? true else {
+            return false
+        }
+
+        if !hasFocusContext {
+            return attributes.hasSelectedTextRange && attributes.valueIsSettable
+        }
+
+        if attributes.isEditable == true {
+            return true
+        }
+
+        if attributes.valueIsSettable {
+            return true
+        }
+
+        let hasTextRole = isTextEntryRole(attributes.role)
+
+        if attributes.hasSelectedTextRange {
+            return hasTextRole
+        }
+
+        if hasTextRole {
+            return true
+        }
+
+        return false
+    }
+
+    private static func isTextEntryRole(_ role: String?) -> Bool {
+        guard let role else {
+            return false
+        }
+
+        return role == (kAXTextFieldRole as String)
+            || role == (kAXTextAreaRole as String)
+            || role == (kAXComboBoxRole as String)
+    }
+
+    private static func attributes(for element: AXUIElement) -> PasteTargetAttributes {
+        PasteTargetAttributes(
+            role: stringAttribute(kAXRoleAttribute as CFString, on: element),
+            isEnabled: boolAttribute(kAXEnabledAttribute as CFString, on: element),
+            isEditable: boolAttribute("AXEditable" as CFString, on: element),
+            isFocused: boolAttribute(kAXFocusedAttribute as CFString, on: element),
+            hasSelectedTextRange: hasAttribute(kAXSelectedTextRangeAttribute as CFString, on: element),
+            valueIsSettable: isAttributeSettable(kAXValueAttribute as CFString, on: element)
+        )
+    }
+
+    private static func axElementAttribute(_ attribute: CFString, on element: AXUIElement) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            return nil
+        }
+
+        return unsafeBitCast(value, to: AXUIElement.self)
+    }
+
+    private static func stringAttribute(_ attribute: CFString, on element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+
+        return value as? String
+    }
+
+    private static func boolAttribute(_ attribute: CFString, on element: AXUIElement) -> Bool? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+            return nil
+        }
+
+        return value as? Bool
+    }
+
+    private static func hasAttribute(_ attribute: CFString, on element: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        return AXUIElementCopyAttributeValue(element, attribute, &value) == .success
+    }
+
+    private static func isAttributeSettable(_ attribute: CFString, on element: AXUIElement) -> Bool {
+        var isSettable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, attribute, &isSettable) == .success else {
+            return false
+        }
+
+        return isSettable.boolValue
+    }
+
+    private static func children(of element: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success,
+              let children = value as? [Any] else {
+            return []
+        }
+
+        return children.compactMap {
+            let value = $0 as CFTypeRef
+            guard CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                return nil
+            }
+
+            return unsafeBitCast(value, to: AXUIElement.self)
+        }
+    }
+
+    // MARK: - Menu Bar Inspection
+
+    /// Duck-typing check: returns true if the frontmost app has an enabled Paste
+    /// menu item (Cmd+V). Apps that expose this command support pasting even when
+    /// their editor doesn't advertise standard AX text-editing attributes.
+    static func frontmostAppHasPasteMenuItem() -> Bool {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return false }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+
+        guard let menuBar = axElementAttribute(kAXMenuBarAttribute as CFString, on: appElement) else {
+            return false
+        }
+
+        let menuBarItems = children(of: menuBar)
+        for menuBarItem in menuBarItems {
+            let submenus = children(of: menuBarItem)
+            for submenu in submenus {
+                let menuItems = children(of: submenu)
+                for menuItem in menuItems {
+                    if isPasteMenuItem(menuItem) {
+                        return boolAttribute(kAXEnabledAttribute as CFString, on: menuItem) ?? true
+                    }
+                }
+            }
+        }
+
+        return false
+    }
+
+    private static func isPasteMenuItem(_ element: AXUIElement) -> Bool {
+        var cmdCharRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, "AXMenuItemCmdChar" as CFString, &cmdCharRef) == .success,
+              let cmdChar = cmdCharRef as? String,
+              cmdChar.lowercased() == "v" else {
+            return false
+        }
+
+        // AXMenuItemCmdModifiers: 0 = Command only (no Shift/Option/Control)
+        var modRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, "AXMenuItemCmdModifiers" as CFString, &modRef) == .success,
+           let modifiers = modRef as? Int,
+           modifiers != 0 {
+            return false
+        }
+
+        return true
+    }
+
+    // MARK: - Key Simulation
+
+    private static func defaultCommandVPasteAction() -> (() -> Void)? {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: false) else {
+            return nil
+        }
+
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+
+        return {
+            keyDown.post(tap: .cghidEventTap)
+            keyUp.post(tap: .cghidEventTap)
+        }
+    }
+}

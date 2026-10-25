@@ -1,0 +1,128 @@
+struct ChordEngine {
+    enum InputEvent: Equatable {
+        case flagsChanged(PhysicalKey)
+        case keyDown(PhysicalKey)
+        case keyUp(PhysicalKey)
+    }
+
+    enum Effect: Equatable {
+        case startRecording
+        case stopRecording
+        case restartRecording
+    }
+
+    private let bindings: [ChordAction: KeyChord]
+    private(set) var pressedKeys: Set<PhysicalKey> = []
+    private(set) var activeRecordingAction: ChordAction?
+    // hands-free mode: true once every key that started it was let go, so a later Fn press can end it
+    private var toggleKeysReleased = false
+
+    init(bindings: [ChordAction: KeyChord]) {
+        self.bindings = bindings
+    }
+
+    mutating func handle(_ inputEvent: InputEvent) -> [Effect] {
+        guard updatePressedKeys(for: inputEvent) else { return [] }
+        return evaluateStateTransition()
+    }
+
+    mutating func syncPressedKeys(_ pressedKeys: Set<PhysicalKey>) -> [Effect] {
+        guard self.pressedKeys != pressedKeys else { return [] }
+        self.pressedKeys = pressedKeys
+        return evaluateStateTransition()
+    }
+
+    private mutating func evaluateStateTransition() -> [Effect] {
+        
+        switch activeRecordingAction {
+        case .pushToTalk:
+            if matchResult() == .exact(.toggleToTalk) {
+                activeRecordingAction = .toggleToTalk
+                toggleKeysReleased = false
+                return [.restartRecording]
+            }
+
+            guard let pushChord = bindings[.pushToTalk] else {
+                activeRecordingAction = nil
+                return []
+            }
+
+            if !pressedKeys.isSuperset(of: pushChord.keys) {
+                activeRecordingAction = nil
+                return [.stopRecording]
+            }
+
+            return []
+
+        case .toggleToTalk:
+            if pressedKeys.isEmpty {
+                toggleKeysReleased = true
+                return []
+            }
+            // Ends with the push-to-talk key alone (Fn) once the starting keys were let go
+            // (otherwise releasing Space before Fn would stop it at once). Fn+Space still works too.
+            let pushToTalkAlone = toggleKeysReleased && pressedKeys == bindings[.pushToTalk]?.keys
+            if matchResult() == .exact(.toggleToTalk) || pushToTalkAlone {
+                activeRecordingAction = nil
+                return [.stopRecording]
+            }
+
+            return []
+
+        case nil:
+            switch matchResult() {
+            case .exact(let action):
+                activeRecordingAction = action
+                toggleKeysReleased = false
+                return [.startRecording]
+            case .none, .prefix:
+                return []
+            }
+        }
+    }
+
+    mutating func reset() {
+        pressedKeys.removeAll()
+        activeRecordingAction = nil
+        toggleKeysReleased = false
+    }
+
+    func matchResult() -> ChordMatchResult {
+        guard !pressedKeys.isEmpty else { return .none }
+
+        // Exact match always wins — even if pressed keys are also a prefix of a longer chord
+        for (action, chord) in bindings where chord.keys == pressedKeys {
+            return .exact(action)
+        }
+
+        if bindings.values.contains(where: { pressedKeys.isSubset(of: $0.keys) && pressedKeys != $0.keys }) {
+            return .prefix
+        }
+
+        return .none
+    }
+
+    private mutating func updatePressedKeys(for inputEvent: InputEvent) -> Bool {
+        switch inputEvent {
+        case .flagsChanged(let key):
+            if pressedKeys.contains(key) {
+                pressedKeys.remove(key)
+                return true
+            }
+
+            pressedKeys.insert(key)
+            return true
+
+        case .keyDown(let key):
+            return pressedKeys.insert(key).inserted
+        case .keyUp(let key):
+            return pressedKeys.remove(key) != nil
+        }
+    }
+}
+
+enum ChordMatchResult: Equatable {
+    case none
+    case prefix
+    case exact(ChordAction)
+}
