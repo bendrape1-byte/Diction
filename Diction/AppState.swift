@@ -355,6 +355,7 @@ class AppState: ObservableObject {
     }
 
     private let onboardingController = OnboardingWindowController()
+    private let meetingPrompt = MeetingPromptController()
     private var didInitialize = false
 
     private static var hasAllPermissions: Bool {
@@ -1159,13 +1160,8 @@ class AppState: ObservableObject {
 
         meetingDetector.onMeetingDetected = { [weak self] meeting in
             guard let self = self, self.activeMeetingSession == nil else { return }
-            let alert = NSAlert()
-            alert.messageText = "Start notes for \(meeting.suggestedName)?"
-            alert.informativeText = "Diction transcribes the call on this Mac."
-            alert.addButton(withTitle: "Start notes")
-            alert.addButton(withTitle: "Not now")
-            NSApp.activate(ignoringOtherApps: true)
-            if alert.runModal() == .alertFirstButtonReturn {
+            self.meetingPrompt.show(meetingName: meeting.suggestedName) { [weak self] in
+                guard let self, self.activeMeetingSession == nil else { return }
                 self.startMeetingTranscription(meetingName: meeting.suggestedName, detectedMeeting: meeting)
             }
         }

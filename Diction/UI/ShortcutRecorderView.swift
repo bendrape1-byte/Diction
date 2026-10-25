@@ -17,27 +17,24 @@ struct ShortcutRecorderView: View {
             HStack {
                 Text(title)
                 Spacer()
-                if isRecording {
-                    Button(action: toggleRecording) {
-                        Text(buttonLabel)
-                            .monospaced()
-                    }
-                    .buttonStyle(BorderedProminentButtonStyle())
-                    .tint(.orange)
-                } else {
-                    Button(action: toggleRecording) {
-                        Text(buttonLabel)
-                            .monospaced()
-                    }
-                    .buttonStyle(BorderedButtonStyle())
-                    .tint(.orange)
+                // Outlined like the window's other buttons; filled white while it waits for the keys.
+                Button(action: toggleRecording) {
+                    Text(buttonLabel)
+                        .font(D.mono(12.5))
+                        .foregroundStyle(isRecording ? D.blue : .white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(isRecording ? Color.white : .clear))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(.white.opacity(isRecording ? 1 : 0.5)))
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
 
             if isRecording {
                 Text("Press the full chord, then release. Press Escape to cancel.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(D.font(12.5))
+                    .foregroundStyle(D.ink3)
             }
         }
         .onDisappear {

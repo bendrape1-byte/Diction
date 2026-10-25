@@ -172,6 +172,70 @@ struct RowButton<Label: View>: View {
     }
 }
 
+/// Asks whether to take notes when a call starts: a small blue window instead of a system alert.
+@MainActor
+final class MeetingPromptController {
+    private var window: NSWindow?
+
+    func show(meetingName: String, onStart: @escaping () -> Void) {
+        window?.close()
+        let view = MeetingPromptView(meetingName: meetingName,
+                                     start: { [weak self] in self?.close(); onStart() },
+                                     dismiss: { [weak self] in self?.close() })
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 210),
+                         styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden
+        w.isMovableByWindowBackground = true
+        w.appearance = NSAppearance(named: .darkAqua)
+        w.backgroundColor = NSColor(D.blue)
+        w.isReleasedWhenClosed = false
+        w.level = .floating  // stays above the call window it's asking about
+        let hosting = NSHostingView(rootView: view)
+        hosting.sizingOptions = []
+        w.contentView = hosting
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        window = w
+    }
+
+    private func close() {
+        window?.close()
+        window = nil
+    }
+}
+
+/// Return starts notes, Esc says not now, like the alert it replaces.
+struct MeetingPromptView: View {
+    let meetingName: String
+    let start: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Start notes for \(meetingName)?")
+                .font(D.font(19, .bold))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Diction transcribes the call on this Mac.").foregroundStyle(D.ink2)
+            HStack(spacing: 10) {
+                WhiteButton(title: "Start notes", action: start).keyboardShortcut(.defaultAction)
+                LineButton(title: "Not now", action: dismiss).keyboardShortcut(.cancelAction)
+            }
+            .padding(.top, 14)
+        }
+        .padding(.horizontal, 32)
+        .padding(.top, 44)
+        .padding(.bottom, 28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(D.blue)
+        .foregroundStyle(.white)
+        .font(D.font(14.5))
+        .tint(.white)
+    }
+}
+
 // MARK: - Dictionary
 
 struct DictionaryPage: View {

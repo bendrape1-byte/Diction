@@ -11,6 +11,7 @@ enum D {
     static let ink3 = Color(red: 153 / 255, green: 181 / 255, blue: 232 / 255)      // labels and times, 5:1
     static let ink4 = Color(red: 119 / 255, green: 152 / 255, blue: 214 / 255)      // large unselected text, 3.7:1
     static let rule = Color.white.opacity(0.16)
+    static let warn = Color(red: 1, green: 200 / 255, blue: 196 / 255)               // errors: pale red, 7:1 on the blue
 
     static func font(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { atkinson(size, weight, italic: false) }
     static func italic(_ size: CGFloat) -> Font { atkinson(size, .regular, italic: true) }

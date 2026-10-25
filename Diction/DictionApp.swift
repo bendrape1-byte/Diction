@@ -59,7 +59,7 @@ struct DictionApp: App {
 }
 
 #if DEBUG
-/// `--snapshot <folder>`: draws every page, the settings, the first-run screen and the indicator states into PNGs
+/// `--snapshot <folder>`: draws every page, the settings, the first-run screen, the meeting prompt and the indicator states into PNGs
 /// and quits, so the UI can be checked without clicking through it. Also notes which view a click on the tabs reaches.
 @MainActor
 enum Snapshot {
@@ -70,7 +70,8 @@ enum Snapshot {
             ($0.rawValue, NSHostingView(rootView: HubView(appState: appState, page: $0)), NSSize(width: 600, height: 780))
         }
         shots += [
-            ("settings", NSHostingView(rootView: SettingsView(appState: appState)), NSSize(width: 520, height: 1180)),
+            ("settings", fixedSize(SettingsView(appState: appState)), NSSize(width: 520, height: 1180)),
+            ("meeting-prompt", fixedSize(MeetingPromptView(meetingName: "Zoom — 10:03", start: {}, dismiss: {})), NSSize(width: 440, height: 210)),
             ("onboarding", fixedSize(OnboardingView(appState: appState, step: .welcome, onFinish: {})), NSSize(width: 640, height: 600)),
             ("permissions", fixedSize(OnboardingView(appState: appState, step: .permissions, onFinish: {})), NSSize(width: 640, height: 600)),
             ("plate-listening", NSHostingView(rootView: LinePlate(mode: .listening, level: { 0.6 })), plate),
@@ -81,7 +82,7 @@ enum Snapshot {
         let windows = shots.map { name, view, size -> (String, NSWindow) in
             let w = NSWindow(contentRect: NSRect(origin: NSPoint(x: -6000, y: 0), size: size),
                              styleMask: [.borderless], backing: .buffered, defer: false)
-            w.appearance = NSAppearance(named: name == "settings" ? .aqua : .darkAqua)
+            w.appearance = NSAppearance(named: .darkAqua)
             w.contentView = view
             w.orderFront(nil)
             return (name, w)
