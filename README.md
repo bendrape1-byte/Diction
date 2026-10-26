@@ -5,8 +5,8 @@
 A dictation app for macOS. Hold a shortcut, talk, let go, and the text is typed wherever your cursor is, in any app.
 
 - **Speech recognition runs on your Mac** (Parakeet v3). Your audio never leaves it.
-- **Cleanup with Claude Haiku** removes filler words and fixes punctuation. You use your own Anthropic API key; for normal daily use that's a few cents a month.
-- **Or completely free and local:** leave the API key empty and a small model on your Mac does the cleanup. It's slower and rougher than Haiku.
+- **Cleanup with Claude Haiku** removes filler words and fixes punctuation. You use your own Anthropic API key, and it costs less than 1 cent per 1,000 words dictated.
+- **Or completely free and local:** choose Local only and a small model on your Mac does the cleanup. Nothing leaves your Mac, but it's noticeably worse than Haiku.
 
 ## Features
 
@@ -30,7 +30,7 @@ You need macOS 14 or later and Xcode 16 or later.
    Or copy `Config/LocalSigning.xcconfig.example` to `Config/LocalSigning.xcconfig` and set `DEVELOPMENT_TEAM` there.
 3. Press ⌘R. Xcode fetches the Swift packages on the first build.
 
-On first launch Diction asks for three permissions (Microphone, Accessibility, Input Monitoring) and downloads the speech model and a small cleanup model (about 0.5 GB). After that it works offline.
+On first launch Diction asks how to clean up your dictations (Claude Haiku or Local only) and for three permissions (Microphone, Accessibility, Input Monitoring). It downloads the speech model and a small cleanup model (about 0.5 GB). After that it works offline.
 
 ## Use
 
@@ -38,7 +38,7 @@ On first launch Diction asks for three permissions (Microphone, Accessibility, I
 - **Hands-free:** Right ⌘ + Right ⌥ + Space. Press again, or click the pill, to finish.
 - Both shortcuts can be changed in Settings (⌘, in the Diction window).
 
-To use Claude Haiku, open Settings and paste your Anthropic API key (it's stored in your Keychain). Only the transcript text goes to Anthropic, plus the text read from your window if that option is on.
+To use Claude Haiku, paste your Anthropic API key during setup or in Settings. Get one at [platform.claude.com](https://platform.claude.com/settings/keys). The key stays in your Mac's Keychain. Only the transcript text goes to Anthropic, plus the text read from your window if that option is on. Switch between Claude Haiku and Local only any time in Settings → Cleanup.
 
 Haiku's instructions live in `~/Library/Application Support/Diction/haiku_prompt.txt`. Diction writes a general version there on first launch; edit it to tune the cleanup to how you talk.
 

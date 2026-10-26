@@ -161,6 +161,15 @@ struct CleanupPromptBuilder: Sendable {
 // MARK: - Haiku
 
 extension AnthropicCleanupBackend {
+    static let localOnlyDefaultsKey = "localCleanupOnly"
+
+    /// "Local only", chosen in the first-run window or in Settings: Haiku is never asked, not even to warm up,
+    /// whether or not a key is saved.
+    static var localOnly: Bool {
+        get { UserDefaults.standard.bool(forKey: localOnlyDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: localOnlyDefaultsKey) }
+    }
+
     /// Haiku reads its instructions from haiku_prompt.txt (see `promptURL`). A fresh install has none, and without it
     /// every dictation went to the local model even with an API key. This writes a general one on launch, and never
     /// replaces a file that's already there, so a prompt tuned to your own dictations stays.

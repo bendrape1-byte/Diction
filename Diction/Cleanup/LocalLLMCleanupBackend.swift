@@ -31,8 +31,8 @@ final class AnthropicCleanupBackend: CleanupBackend {
     private static var storedKey: String? = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
         ?? readKeychain(service: "anthropic-api-key")
     private static let keyLock = NSLock()  // Settings can replace the key while a cleanup reads it
-    private static var apiKey: String? { keyLock.withLock { storedKey } }
-    static var hasAPIKey: Bool { apiKey != nil }
+    private static var apiKey: String? { localOnly ? nil : keyLock.withLock { storedKey } }  // nil: the local model cleans up
+    static var hasAPIKey: Bool { keyLock.withLock { storedKey } != nil }
     @MainActor private static var lastWarmUp = Date.distantPast
     // the request prefetch() sent at a pause in speech, keyed by its exact content
     private static let earlyLock = NSLock()
