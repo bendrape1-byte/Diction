@@ -115,7 +115,7 @@ final class TextCleaner {
         correctionStore: CorrectionStore = CorrectionStore()
     ) {
         self.init(
-            // Haiku first when a key and haiku_prompt.txt exist, otherwise the local model as before
+            // Haiku first when there's an API key, otherwise the local model as before
             localBackend: AnthropicCleanupBackend(fallback: LocalLLMCleanupBackend(cleanupManager: cleanupManager)),
             correctionStore: correctionStore
         )
