@@ -25,4 +25,22 @@ final class CleanupBackendTests: XCTestCase {
         XCTAssertEqual(manager.cleanedInputs.map(\.prompt), ["local prompt"])
         XCTAssertEqual(manager.cleanedInputs.map(\.modelKind), [nil])
     }
+
+    func testDropFillers() {
+        let cases = [
+            ("Okay, this is a test now. Um, I want you to look.", "Okay, this is a test now. I want you to look."),
+            ("Uh, I'm gonna paste it to you", "I'm gonna paste it to you"),
+            ("the exercises real, uh, later", "the exercises real, later"),
+            ("This is uh really good.", "This is really good."),
+            ("A list:\n- one\n\nUm, so we go on.", "A list:\n- one\n\nSo we go on."),
+            ("Um, iPhone first.", "iPhone first."),
+            ("And then, äh.", "And then."),
+            // German "um" is a word, "Uhr" and "Uh-huh" aren't fillers
+            ("Lass uns um 14 Uhr treffen, darum, um es zu klären.", "Lass uns um 14 Uhr treffen, darum, um es zu klären."),
+            ("Uh-huh, sure.", "Uh-huh, sure."),
+        ]
+        for (input, expected) in cases {
+            XCTAssertEqual(AnthropicCleanupBackend.dropFillers(input), expected, input)
+        }
+    }
 }

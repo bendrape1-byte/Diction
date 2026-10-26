@@ -93,11 +93,42 @@ final class AnthropicCleanupBackend: CleanupBackend {
           tone and form of address (du stays du).
         - Fix punctuation, capitalization and obvious mis-recognitions; use the screen text and dictionary
           for names and terms.
-        - Remove filler words (um, uh, äh) and accidental repetitions.
+        - Remove filler words (um, uh, äh, ähm) everywhere, also at the start of a sentence, and accidental repetitions.
         - Apply self-corrections: "Friday at three, no, four" becomes "Friday at four".
         - Write numbers, times and units the way people type them (4 GB, 14:00, 30 g).
+        - Lay out longer dictations the way a person would type them:
+          - Start a new paragraph (an empty line) where the speaker moves on to a new point. A dictation of more
+            than four sentences almost always has several points. One or two sentences stay one paragraph.
+          - When the speaker lists three or more things in a row ("you did X, you did Y, Z and W"), put each on its
+            own line starting with "- ", in the speaker's words. The words leading into the list stay above it and
+            end with a colon; what follows the list continues as normal text after an empty line. Drop the "and"
+            before the last item and the commas between items.
+          - Put quotation marks around a title the speaker names, such as the video, song or file called X.
         - Change nothing else. Short fragments stay short.
         Return JSON: {"text": "<cleaned text>"}
+
+        Examples of the layout:
+
+        Transcript: So quick update on the launch. The landing page is done and the emails are scheduled for Monday. What's still missing is, uh, the pricing table, the FAQ, the demo video and the cookie banner, and then we can go live. For the ads I want to wait until we see the first numbers. Can you check with Sarah if she has time on Thursday?
+        Cleaned: So, quick update on the launch. The landing page is done and the emails are scheduled for Monday.
+
+        What's still missing is:
+        - the pricing table
+        - the FAQ
+        - the demo video
+        - the cookie banner
+
+        And then we can go live.
+
+        For the ads I want to wait until we see the first numbers. Can you check with Sarah if she has time on Thursday?
+
+        Transcript: Ich hab heute mit dem Kunden telefoniert und er will, äh, ein paar Sachen geändert haben, er will das Logo größer, er will eine andere Schriftart und er will die Preise auf der Startseite haben. Ansonsten ist er sehr zufrieden. Nächste Woche schick ich ihm die neue Version und dann schauen wir weiter.
+        Cleaned: Ich hab heute mit dem Kunden telefoniert, und er will ein paar Sachen geändert haben:
+        - er will das Logo größer
+        - er will eine andere Schriftart
+        - er will die Preise auf der Startseite haben
+
+        Ansonsten ist er sehr zufrieden. Nächste Woche schick ich ihm die neue Version, und dann schauen wir weiter.
         """
 
     func clean(text: String, prompt: String, modelKind: LocalCleanupModelKind?) async throws -> String {
@@ -233,7 +264,36 @@ final class AnthropicCleanupBackend: CleanupBackend {
         let ratio = Double(cleaned.count) / Double(max(spoken(input).count, 1))
         let shortest = UserDefaults.standard.bool(forKey: "cleanupMedium") ? 0.45 : 0.7  // medium cleanup is meant to shorten
         guard !cleaned.isEmpty, (shortest...1.3).contains(ratio) else { throw CleanupBackendError.unusableOutput(rawOutput: raw) }
-        return cleaned
+        return dropFillers(cleaned)
+    }
+
+    private static let fillerExpression = try! NSRegularExpression(
+        pattern: "(,?)[ \\t]*\\b(uh|uhm|umm|erm|äh|ähm|öhm|um(?=,))\\b(?!-)(,?)[ \\t]*", options: .caseInsensitive)
+
+    /// Haiku still left a sentence-initial "Um," or "Uh," in some long dictations, so they're dropped here too.
+    /// German "um" is a real word ("um 14 Uhr"), so "um" only goes when a comma follows it.
+    static func dropFillers(_ text: String) -> String {
+        var out = text as NSString
+        for m in fillerExpression.matches(in: text, range: NSRange(location: 0, length: out.length)).reversed() {
+            let before = m.range.location == 0 ? "\n" : out.substring(with: NSRange(location: m.range.location - 1, length: 1))
+            let end = m.range.location + m.range.length
+            let after = end < out.length ? out.substring(with: NSRange(location: end, length: 1)) : ""
+            // "now. Um, I" -> "now. I", "real, uh, later" -> "real, later", "so, uh." -> "so."
+            let replacement = before == "\n" || after.isEmpty || ".,!?;:\n".contains(after) ? ""
+                : (m.range(at: 1).length > 0 && m.range(at: 3).length > 0 ? ", " : " ")
+            let startedSentence = out.substring(with: m.range(at: 2)).first?.isUppercase == true
+            out = out.replacingCharacters(in: m.range, with: replacement) as NSString
+            // "Um, so we" -> "So we", but "Um, iPhone" stays "iPhone"
+            let next = m.range.location + (replacement as NSString).length
+            if startedSentence, next + 1 < out.length {
+                let pair = out.substring(with: NSRange(location: next, length: 2))
+                if pair.allSatisfy({ $0.isLetter && $0.isLowercase }) {
+                    out = out.replacingCharacters(in: NSRange(location: next, length: 1),
+                                                  with: String(pair.first!).uppercased()) as NSString
+                }
+            }
+        }
+        return (out as String).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Stores the key under the service the cleanup reads (replacing an older one) and uses it from the next dictation on.
