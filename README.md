@@ -2,56 +2,50 @@
 
 # Diction
 
-Diction is a dictation app for macOS. Hold fn and talk; when you let go, it types what you said wherever your cursor is. For longer stretches, press fn + Space to dictate hands-free and fn again to finish. Esc cancels.
+A dictation app for macOS. Hold a shortcut, talk, let go, and the text is typed wherever your cursor is, in any app.
 
-- Speech recognition runs on your Mac with Parakeet v3, which knows 25 languages. Diction downloads the model the first time it starts.
-- With an Anthropic API key, Claude Haiku cleans up each dictation. It takes out filler words, fixes punctuation, and turns "Friday at three, no, four" into "Friday at four". The audio stays on your Mac; only the text goes to Anthropic. Without a key, a small model on your Mac does the cleanup, downloaded the first time it's needed.
+- **Speech recognition runs on your Mac** (Parakeet v3). Your audio never leaves it.
+- **Cleanup with Claude Haiku** removes filler words and fixes punctuation. You use your own Anthropic API key, and it costs less than 1 cent per 1,000 words dictated.
+- **Or completely free and local:** choose Local only and a small model on your Mac does the cleanup. Nothing leaves your Mac, but it's noticeably worse than Haiku.
 
-## The window
+## Features
 
-- History lists everything you dictated. Click a line to copy it.
-- Meetings records calls and transcribes them on your Mac.
-- Dictionary is for names and words Diction should spell your way.
-- In Swaps, a short spoken phrase turns into a longer text, such as your address or a link you send often.
-- Style decides how the text comes out: formal, casual, very casual or excited.
+- Hold to talk, or hands-free mode. Esc cancels.
+- A small pill under the menu bar that moves with your voice.
+- Cleanup levels Off, Light and Medium; styles Formal, Casual, lowercase and Excited.
+- Reads the window you're dictating into, so names on screen are spelled right (optional).
+- Dictionary for names and jargon, plus fixes like "clawed → Claude". Fix a word after it's pasted and Diction learns it.
+- Swaps: say a short phrase, get a longer text typed, like your address or a link.
+- Searchable history of everything you've dictated.
+- Meeting notes: records your mic and the call, labels "Me" and "Others", transcribes on your Mac and saves Markdown files. Can offer to start when a Zoom, Teams, Meet, FaceTime, Webex, Slack or Discord call begins.
+- Pauses music and video while you dictate.
+- Languages: English, German, Spanish, French, Italian, or automatic.
 
-Settings open from the sliders icon, or with ⌘,.
+## Build and run
 
-## Permissions
+You need macOS 14 or later and Xcode 16 or later.
 
-The first-run window asks for three:
+1. Clone the repo and open `Diction.xcodeproj`.
+2. Pick your signing team: select the Diction target, then Signing & Capabilities, then your team.
+   Or copy `Config/LocalSigning.xcconfig.example` to `Config/LocalSigning.xcconfig` and set `DEVELOPMENT_TEAM` there.
+3. Press ⌘R. Xcode fetches the Swift packages on the first build.
 
-- the microphone, to hear what you say
-- Accessibility, to paste into the app you're using
-- Input Monitoring, to notice when you hold fn
+On first launch Diction asks how to clean up your dictations (Claude Haiku or Local only) and for three permissions (Microphone, Accessibility, Input Monitoring). It downloads the speech model and a small cleanup model (about 0.5 GB). After that it works offline.
 
-Meetings also needs Screen Recording to hear the other side of a call, and so does "Read the window you dictate into" in Settings.
+## Use
 
-## Build
+- **Hold to talk:** Right ⌘ + Right ⌥. Release to paste.
+- **Hands-free:** Right ⌘ + Right ⌥ + Space. Press again, or click the pill, to finish.
+- Both shortcuts can be changed in Settings (⌘, in the Diction window).
 
-You need a Mac with Apple Silicon, macOS 14 or later, and Xcode 27.
+To use Claude Haiku, paste your Anthropic API key during setup or in Settings. Get one at [platform.claude.com](https://platform.claude.com/settings/keys). The key stays in your Mac's Keychain. Only the transcript text goes to Anthropic, plus the text read from your window if that option is on. Switch between Claude Haiku and Local only any time in Settings → Cleanup.
 
-```bash
-git clone https://github.com/bendrape1-byte/Diction.git
-cd Diction
-xcodebuild -scheme Diction -configuration Release ARCHS=arm64 -derivedDataPath build \
-  CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=NO COMPILER_INDEX_STORE_ENABLE=NO \
-  -skipPackagePluginValidation -skipMacroValidation build
-open build/Build/Products/Release/Diction.app
-```
+Haiku's instructions live in `~/Library/Application Support/Diction/haiku_prompt.txt`. Diction writes a general version there on first launch; edit it to tune the cleanup to how you talk.
 
-`CODE_SIGN_IDENTITY=-` signs the app without an Apple account. macOS then treats each rebuild as a new app and asks for the permissions again. To keep them across rebuilds, sign with your own team: replace `CODE_SIGN_IDENTITY=-` with `CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Apple Development" DEVELOPMENT_TEAM=<your team ID>`. Xcode shows your team ID under Settings → Accounts.
+## Credit
 
-## API key and prompt
-
-Paste your Anthropic API key into Settings → Cleanup. Diction stores it in the macOS Keychain.
-
-Haiku follows a short set of built-in rules. To use your own instructions instead, put a file named `haiku_prompt.txt` in `~/Library/Application Support/Diction/`. It helps to include a few of your own dictations, each next to the way you would have typed it, so the cleanup matches how you write.
-
-## Your data
-
-Dictations, the dictionary and settings stay in `~/Library/Application Support/Diction/`. Meeting transcripts go to `~/Documents/Diction Meetings/`.
+Diction started as a fork of [Ghost Pepper](https://github.com/matthartman/ghost-pepper) by Matt Hartman. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 
-MIT, see [LICENSE](LICENSE). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) credits the code and the font that come from other projects.
+MIT, see [LICENSE](LICENSE).

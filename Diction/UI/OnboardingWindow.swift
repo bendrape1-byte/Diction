@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// First-run setup on the blue canvas: welcome → permissions → try it.
+// First-run setup on the blue canvas: welcome → cleanup → permissions → try it.
 // Also opens straight at permissions when one goes missing later.
 
 @MainActor
@@ -39,7 +39,7 @@ final class OnboardingWindowController {
 }
 
 struct OnboardingView: View {
-    enum Step { case welcome, permissions, tryIt }
+    enum Step { case welcome, cleanup, permissions, tryIt }
 
     @ObservedObject var appState: AppState
     @State var step: Step
@@ -54,6 +54,7 @@ struct OnboardingView: View {
             Spacer(minLength: 24)
             switch step {
             case .welcome: welcome
+            case .cleanup: CleanupStep { step = .permissions }
             case .permissions: PermissionsStep(appState: appState) { step = .tryIt }
             case .tryIt: TryItStep(appState: appState, onFinish: onFinish)
             }
@@ -70,11 +71,110 @@ struct OnboardingView: View {
     private var welcome: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Diction").font(D.font(44, .bold))
-            Text("Hold fn and talk. When you let go, the text appears wherever your cursor is, in any app.")
+            Text("Hold \(appState.pushToTalkChord.displayString) and talk. When you let go, the text appears wherever your cursor is, in any app.")
                 .font(D.font(16)).foregroundStyle(D.ink2).lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 460, alignment: .leading)
-            WhiteButton(title: "Set up") { step = .permissions }.padding(.top, 10)
+            WhiteButton(title: "Set up") { step = .cleanup }.padding(.top, 10)
         }
+    }
+}
+
+/// Who cleans up each dictation: Claude Haiku with your own API key, or the small model on this Mac.
+/// Comes before the permissions, which often end in a restart that skips the rest of the setup.
+private struct CleanupStep: View {
+    let onContinue: () -> Void
+    @State private var apiKey = ""
+    @State private var keySaved = AnthropicCleanupBackend.hasAPIKey
+    @State private var keyFailed = false
+
+    private var canUseHaiku: Bool { keySaved || !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Cleanup").font(D.font(32, .bold))
+            Text("Filler words out, punctuation in. Choose what does it.")
+                .font(D.font(16)).foregroundStyle(D.ink2)
+                .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 480, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 0) {
+                haiku
+                local
+            }
+            .frame(maxWidth: 520)
+            .padding(.top, 6)
+        }
+    }
+
+    private var haiku: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            label("Claude Haiku", "Recommended")
+            HStack(spacing: 12) {
+                SecureField("Anthropic API key", text: $apiKey,
+                            prompt: Text(keySaved ? "API key saved in your Keychain" : "Anthropic API key, sk-ant-…"))
+                    .textFieldStyle(.plain)
+                    .font(D.font(14.5))
+                    .padding(.vertical, 8)
+                    .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.35)).frame(height: 1) }
+                    .onSubmit(useHaiku)
+                WhiteButton(title: "Use Haiku", action: useHaiku)
+                    .disabled(!canUseHaiku)
+                    .opacity(canUseHaiku ? 1 : 0.5)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text("This will stay on your Mac. Diction only sends it to Anthropic.")
+                Text("Costs less than 1 cent per 1,000 words dictated.")
+                if keyFailed {
+                    Text("The Keychain didn't accept the key. Try again.").foregroundStyle(D.warn)
+                }
+                Link(destination: URL(string: "https://platform.claude.com/settings/keys")!) {
+                    Text("Get a key at platform.claude.com").underline()
+                }
+            }
+            .font(D.font(13.5))
+            .foregroundStyle(D.ink2)
+        }
+        .padding(.vertical, 14)
+        .overlay(alignment: .bottom) { Rectangle().fill(D.rule).frame(height: 1) }
+    }
+
+    private var local: some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                label("Local only", "Free")
+                Text("Nothing leaves your Mac. This is noticeably worse than the API option.")
+                    .font(D.font(13.5)).foregroundStyle(D.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            LineButton(title: "Use local only", action: useLocal)
+        }
+        .padding(.vertical, 14)
+        .overlay(alignment: .bottom) { Rectangle().fill(D.rule).frame(height: 1) }
+    }
+
+    private func label(_ title: String, _ note: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(title).font(D.font(15, .medium))
+            Text(note).font(D.font(13.5)).foregroundStyle(D.ink3)
+        }
+    }
+
+    /// A typed key replaces the saved one; with the field empty, the saved key is kept.
+    private func useHaiku() {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key.isEmpty {
+            guard keySaved else { return }
+        } else {
+            keyFailed = !AnthropicCleanupBackend.saveAPIKey(key)
+            if keyFailed { return }
+        }
+        AnthropicCleanupBackend.localOnly = false
+        onContinue()
+    }
+
+    private func useLocal() {
+        AnthropicCleanupBackend.localOnly = true
+        onContinue()
     }
 }
 
@@ -109,7 +209,7 @@ private struct PermissionsStep: View {
                     PermissionChecker.promptAccessibility()
                     PermissionChecker.openAccessibilitySettings()
                 }
-                row("Input Monitoring", "To notice when you hold fn", granted: inputMonitoring) {
+                row("Input Monitoring", "To notice when you hold the shortcut", granted: inputMonitoring) {
                     PermissionChecker.promptInputMonitoring()
                     PermissionChecker.openInputMonitoringSettings()
                 }

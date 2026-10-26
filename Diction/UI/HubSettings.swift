@@ -43,6 +43,7 @@ struct SettingsView: View {
     @State private var deviceID: AudioDeviceID
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @AppStorage("showInDock") private var showInDock = true
+    @AppStorage(AnthropicCleanupBackend.localOnlyDefaultsKey) private var localOnly = false
     @State private var apiKey = ""
     @State private var keySaved = AnthropicCleanupBackend.hasAPIKey
     @State private var keyFailed = false
@@ -119,20 +120,26 @@ struct SettingsView: View {
     }
 
     private var cleanup: some View {
-        SettingsSection("Cleanup", footer: "With an Anthropic API key, Claude Haiku cleans up each dictation. Without one, a small model on this Mac does it. "
+        SettingsSection("Cleanup", footer: "Claude Haiku uses your Anthropic API key, which stays on your Mac, and costs less than 1 cent per 1,000 words. "
+                        + "Local only is free and nothing leaves your Mac, but it's noticeably worse. "
                         + "Reading the window helps with names; learning adds the words you fix after pasting to your dictionary.") {
-            HStack(alignment: .center, spacing: 14) {
-                SecureField("Anthropic API key", text: $apiKey,
-                            prompt: Text(keySaved ? "API key saved in your Keychain" : "Anthropic API key, sk-ant-…"))
-                    .textFieldStyle(.plain)
-                    .padding(.vertical, 8)
-                    .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.35)).frame(height: 1) }
-                    .onSubmit(saveKey)
-                LineButton(title: "Save", action: saveKey)
+            SettingsRow("Clean up with") {
+                MenuPicker(selection: $localOnly, choices: [(value: false, title: "Claude Haiku"), (value: true, title: "Local only")])
             }
-            .padding(.vertical, 8)
-            if keyFailed {
-                Text("The Keychain didn't accept the key. Try again.").font(D.font(12.5)).foregroundStyle(D.warn)
+            if !localOnly {
+                HStack(alignment: .center, spacing: 14) {
+                    SecureField("Anthropic API key", text: $apiKey,
+                                prompt: Text(keySaved ? "API key saved in your Keychain" : "Anthropic API key, sk-ant-…"))
+                        .textFieldStyle(.plain)
+                        .padding(.vertical, 8)
+                        .overlay(alignment: .bottom) { Rectangle().fill(.white.opacity(0.35)).frame(height: 1) }
+                        .onSubmit(saveKey)
+                    LineButton(title: "Save", action: saveKey)
+                }
+                .padding(.vertical, 8)
+                if keyFailed {
+                    Text("The Keychain didn't accept the key. Try again.").font(D.font(12.5)).foregroundStyle(D.warn)
+                }
             }
             SettingsRow("Speech model") {
                 MenuPicker(selection: Binding(get: { appState.speechModel }, set: { name in

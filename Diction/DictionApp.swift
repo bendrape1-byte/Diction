@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// Loads the font, and clicking the Dock icon while the window is closed opens it again.
+/// Loads the font and the default Haiku prompt, and clicking the Dock icon while the window is closed opens it again.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var onReopen: (() -> Void)?
     func applicationWillFinishLaunching(_ notification: Notification) {
         D.registerFonts()
+        AnthropicCleanupBackend.installDefaultPromptIfMissing()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows { onReopen?() }
@@ -73,6 +74,7 @@ enum Snapshot {
             ("settings", fixedSize(SettingsView(appState: appState)), NSSize(width: 520, height: 1180)),
             ("meeting-prompt", fixedSize(MeetingPromptView(meetingName: "Zoom — 10:03", start: {}, dismiss: {})), NSSize(width: 440, height: 210)),
             ("onboarding", fixedSize(OnboardingView(appState: appState, step: .welcome, onFinish: {})), NSSize(width: 640, height: 600)),
+            ("onboarding-cleanup", fixedSize(OnboardingView(appState: appState, step: .cleanup, onFinish: {})), NSSize(width: 640, height: 600)),
             ("permissions", fixedSize(OnboardingView(appState: appState, step: .permissions, onFinish: {})), NSSize(width: 640, height: 600)),
             ("plate-listening", NSHostingView(rootView: LinePlate(mode: .listening, level: { 0.6 })), plate),
             ("plate-handsfree", NSHostingView(rootView: LinePlate(mode: .handsFree, level: { 0.4 })), plate),
