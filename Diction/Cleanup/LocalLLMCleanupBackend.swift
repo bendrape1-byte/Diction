@@ -33,6 +33,13 @@ final class AnthropicCleanupBackend: CleanupBackend {
     private static let keyLock = NSLock()  // Settings can replace the key while a cleanup reads it
     private static var apiKey: String? { localOnly ? nil : keyLock.withLock { storedKey } }  // nil: the local model cleans up
     static var hasAPIKey: Bool { keyLock.withLock { storedKey } != nil }
+    static let localOnlyDefaultsKey = "localCleanupOnly"
+    /// "Local only", chosen in the first-run window or in Settings: Haiku is never asked, not even to warm up,
+    /// whether or not a key is saved.
+    static var localOnly: Bool {
+        get { UserDefaults.standard.bool(forKey: localOnlyDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: localOnlyDefaultsKey) }
+    }
     @MainActor private static var lastWarmUp = Date.distantPast
     // the request prefetch() sent at a pause in speech, keyed by its exact content
     private static let earlyLock = NSLock()

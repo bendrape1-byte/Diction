@@ -40,7 +40,7 @@ On first launch Diction asks how to clean up your dictations (Claude Haiku or Lo
 
 To use Claude Haiku, paste your Anthropic API key during setup or in Settings. Get one at [platform.claude.com](https://platform.claude.com/settings/keys). The key stays in your Mac's Keychain. Only the transcript text goes to Anthropic, plus the text read from your window if that option is on. Switch between Claude Haiku and Local only any time in Settings → Cleanup.
 
-Haiku's instructions live in `~/Library/Application Support/Diction/haiku_prompt.txt`. Diction writes a general version there on first launch; edit it to tune the cleanup to how you talk.
+Haiku follows built-in cleanup rules. To tune them to how you talk, put your own instructions in `~/Library/Application Support/Diction/haiku_prompt.txt`; Diction uses that file instead whenever it exists.
 
 ## Credit
 

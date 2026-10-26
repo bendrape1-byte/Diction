@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// Loads the font and the default Haiku prompt, and clicking the Dock icon while the window is closed opens it again.
+/// Loads the font, and clicking the Dock icon while the window is closed opens it again.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var onReopen: (() -> Void)?
     func applicationWillFinishLaunching(_ notification: Notification) {
         D.registerFonts()
-        AnthropicCleanupBackend.installDefaultPromptIfMissing()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         if !hasVisibleWindows { onReopen?() }
