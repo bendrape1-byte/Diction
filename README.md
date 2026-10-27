@@ -17,7 +17,8 @@ A dictation app for macOS. Hold a shortcut, talk, let go, and the text is typed 
 - Dictionary for names and jargon, plus fixes like "clawed → Claude". Fix a word after it's pasted and Diction learns it.
 - Swaps: say a short phrase, get a longer text typed, like your address or a link.
 - Searchable history of everything you've dictated.
-- Meeting notes: records your mic and the call, labels "Me" and "Others", transcribes on your Mac and saves Markdown files. Can offer to start when a Zoom, Teams, Meet, FaceTime, Webex, Slack or Discord call begins.
+- Formats for the app you're dictating into: paragraphs in email, no final period in chat, exact file names, paths and commands in terminals and coding agents.
+- Meeting notes: records your mic and the call, labels "Me" and "Others", and transcribes on your Mac. Offers to start when a call app or a browser meeting starts using the microphone, and stops by itself when the call ends. Each meeting is one Markdown file with a short summary, listed in an INDEX.md that an AI agent can search.
 - Pauses music and video while you dictate.
 - Languages: English, German, Spanish, French, Italian, or automatic.
 
@@ -38,7 +39,7 @@ On first launch Diction asks how to clean up your dictations (Claude Haiku or Lo
 - **Hands-free:** Right ⌘ + Right ⌥ + Space. Press again, or click the pill, to finish.
 - Both shortcuts can be changed in Settings (⌘, in the Diction window).
 
-To use Claude Haiku, paste your Anthropic API key during setup or in Settings. Get one at [platform.claude.com](https://platform.claude.com/settings/keys). The key stays in your Mac's Keychain. Only the transcript text goes to Anthropic, plus the text read from your window if that option is on. Switch between Claude Haiku and Local only any time in Settings → Cleanup.
+To use Claude Haiku, paste your Anthropic API key during setup or in Settings. Get one at [platform.claude.com](https://platform.claude.com/settings/keys). The key stays in your Mac's Keychain. Anthropic gets the transcript, the name of the app you're dictating into and its window title (in a browser, that's the tab title), so the cleanup can format the text for that app. In terminals and coding apps it also gets your Mac user name and home folder, so spoken paths come out right. The text read from your window is sent only if that option is on. Switch between Claude Haiku and Local only any time in Settings → Cleanup.
 
 Haiku follows built-in cleanup rules. To tune them to how you talk, put your own instructions in `~/Library/Application Support/Diction/haiku_prompt.txt`; Diction uses that file instead whenever it exists.
 

@@ -7,11 +7,10 @@ struct DetectedMeeting {
     let appName: String
     let bundleIdentifier: String
     let suggestedName: String // e.g. "Zoom — 10:03 AM"
-    var isVideo: Bool = false
-    var sourceURL: String? = nil
 }
 
-/// Monitors for running meeting/video call apps and notifies when one is detected.
+/// Notices when a call starts: a meeting app, or a browser with a meeting tab, has the microphone open.
+/// Being in front isn't enough (that made an empty "meeting" for Discord), and video sites never use the mic.
 /// Off by default — must be explicitly enabled via Settings.
 @MainActor
 final class MeetingDetector {
@@ -20,8 +19,9 @@ final class MeetingDetector {
     private var pollTimer: Timer?
     private var isRunning = false
 
-    /// Bundle IDs that have been detected and dismissed this session (don't re-prompt).
-    private var dismissedBundleIDs: Set<String> = []
+    /// Apps already asked about during their current mic use; forgotten once they let go of the mic,
+    /// so the next call in the same app asks again.
+    private var promptedBundleIDs: Set<String> = []
 
     /// Bundle IDs of known meeting/video call apps.
     private static let knownMeetingApps: [String: String] = [
@@ -34,7 +34,7 @@ final class MeetingDetector {
         "com.cisco.webex.meetings": "Webex",
         "com.google.hangouts": "Google Meet",
         "com.slack.Slack": "Slack",
-        "discord": "Discord",
+        "com.tinyspeck.slackmacgap": "Slack",
         "com.hnc.Discord": "Discord",
     ]
 
@@ -50,26 +50,6 @@ final class MeetingDetector {
         "whereby.com",
     ]
 
-    /// Video site detection rules. `titlePattern` is checked against browser window titles.
-    /// `playing` prefix (e.g. "▶") is optional — when present, only matches actively playing videos.
-    private struct VideoSiteRule {
-        let urlPattern: String
-        let siteName: String
-        let playingPrefix: String? // e.g. "▶" for YouTube
-    }
-
-    private static let videoSiteRules: [VideoSiteRule] = [
-        VideoSiteRule(urlPattern: "- youtube", siteName: "YouTube", playingPrefix: nil),
-        VideoSiteRule(urlPattern: "youtube.com", siteName: "YouTube", playingPrefix: nil),
-        VideoSiteRule(urlPattern: "loom.com", siteName: "Loom", playingPrefix: nil),
-        VideoSiteRule(urlPattern: "- vimeo", siteName: "Vimeo", playingPrefix: nil),
-        VideoSiteRule(urlPattern: "vimeo.com", siteName: "Vimeo", playingPrefix: nil),
-        VideoSiteRule(urlPattern: "twitch.tv", siteName: "Twitch", playingPrefix: nil),
-        VideoSiteRule(urlPattern: "- twitch", siteName: "Twitch", playingPrefix: nil),
-        VideoSiteRule(urlPattern: "netflix.com", siteName: "Netflix", playingPrefix: nil),
-        VideoSiteRule(urlPattern: "dailymotion.com", siteName: "Dailymotion", playingPrefix: nil),
-    ]
-
     /// Bundle IDs of common browsers.
     private static let browserBundleIDs: Set<String> = [
         "com.apple.Safari",
@@ -81,7 +61,7 @@ final class MeetingDetector {
         "com.operasoftware.Opera",
     ]
 
-    /// Start polling for meeting apps.
+    /// Start polling the microphone.
     func start() {
         guard !isRunning else { return }
         isRunning = true
@@ -102,120 +82,80 @@ final class MeetingDetector {
         pollTimer = nil
     }
 
-    /// Mark a meeting app as dismissed so we don't prompt again this session.
-    func dismiss(bundleID: String) {
-        dismissedBundleIDs.insert(bundleID)
-    }
-
-    /// Reset dismissed state (e.g. when the user re-enables detection).
-    func resetDismissals() {
-        dismissedBundleIDs.removeAll()
+    /// Apps that have the microphone open right now, Diction itself left out. A helper process counts for its
+    /// app (Chrome's audio runs in "com.google.Chrome.helper"), and Safari records in WebKit's GPU process.
+    /// Asks CoreAudio's per-process objects (macOS 14.2+; empty on older systems).
+    static func appsUsingMicrophone() -> Set<String> {
+        let known = Array(knownMeetingApps.keys) + browserBundleIDs
+        var apps: Set<String> = []
+        for process in processObjects()
+        where uint32(process, kAudioProcessPropertyIsRunningInput) == 1 {
+            guard let raw = bundleID(process), raw != Bundle.main.bundleIdentifier else { continue }
+            let id = raw.lowercased()
+            if id == "com.apple.webkit.gpu" { apps.insert("com.apple.Safari"); continue }
+            // longest match, so "com.microsoft.teams2.helper" is Teams 2, not classic Teams
+            apps.insert(known.filter { id.hasPrefix($0.lowercased()) }.max { $0.count < $1.count } ?? raw)
+        }
+        return apps
     }
 
     // MARK: - Private
 
     private func checkForMeetingApps() {
-        guard let frontmost = NSWorkspace.shared.frontmostApplication,
-              let frontmostBundleID = frontmost.bundleIdentifier else { return }
+        let micApps = Self.appsUsingMicrophone()
+        promptedBundleIDs.formIntersection(micApps)
 
-        // Check known meeting apps — only when frontmost to avoid false positives
-        // from Zoom/Teams running in the background.
-        if let appName = Self.knownMeetingApps[frontmostBundleID],
-           !dismissedBundleIDs.contains(frontmostBundleID) {
-            dismiss(bundleID: frontmostBundleID)
-            let titles = AccessibilityWindowTitles.all(for: frontmost)
-            let suggestedName = MeetingWindowHeuristics.bestMeetingTitle(in: titles, appName: appName)
-                ?? Self.suggestedMeetingName(appName: appName)
-            let meeting = DetectedMeeting(
-                appName: appName,
-                bundleIdentifier: frontmostBundleID,
-                suggestedName: suggestedName
-            )
-            onMeetingDetected?(meeting)
-            return
-        }
-
-        // Check browsers for meeting URLs or video sites.
-        if Self.browserBundleIDs.contains(frontmostBundleID) {
-            let bundleID = frontmostBundleID
-            let titles = AccessibilityWindowTitles.all(for: frontmost)
-
-            // Check meetings first.
-            if !dismissedBundleIDs.contains("browser-meeting"),
-               let meetingName = matchMeetingPattern(in: titles) {
-                dismiss(bundleID: "browser-meeting")
-                let meeting = DetectedMeeting(
+        for bundleID in micApps.subtracting(promptedBundleIDs) {
+            guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else { continue }
+            let titles = AccessibilityWindowTitles.all(for: app)
+            let meeting: DetectedMeeting
+            if let appName = Self.knownMeetingApps[bundleID] {
+                meeting = DetectedMeeting(
+                    appName: appName,
+                    bundleIdentifier: bundleID,
+                    suggestedName: MeetingWindowHeuristics.bestMeetingTitle(in: titles, appName: appName)
+                        ?? Self.suggestedMeetingName(appName: appName)
+                )
+            } else if Self.browserBundleIDs.contains(bundleID), let meetingName = matchMeetingPattern(in: titles) {
+                meeting = DetectedMeeting(
                     appName: meetingName,
                     bundleIdentifier: bundleID,
                     suggestedName: Self.suggestedMeetingName(appName: meetingName)
                 )
-                onMeetingDetected?(meeting)
-                return
+            } else {
+                continue  // a browser on the mic without a meeting tab (yet): look again next poll
             }
-
-            // Check video sites.
-            if let (siteName, videoTitle) = matchVideoSite(in: titles) {
-                let dismissKey = "video-\(siteName)"
-                guard !dismissedBundleIDs.contains(dismissKey) else { return }
-                dismiss(bundleID: dismissKey)
-
-                let suggestedName: String
-                if let videoTitle = videoTitle {
-                    suggestedName = "\(siteName) — \(videoTitle)"
-                } else {
-                    suggestedName = Self.suggestedMeetingName(appName: siteName)
-                }
-                let url = browserURL(app: frontmost)
-                let meeting = DetectedMeeting(
-                    appName: siteName,
-                    bundleIdentifier: bundleID,
-                    suggestedName: suggestedName,
-                    isVideo: true,
-                    sourceURL: url
-                )
-                onMeetingDetected?(meeting)
-            }
+            promptedBundleIDs.insert(bundleID)
+            onMeetingDetected?(meeting)
+            return
         }
     }
 
-    /// Get all window titles from a browser app.
-    /// Read the URL from the browser's address bar via Accessibility API.
-    private func browserURL(app: NSRunningApplication) -> String? {
-        let pid = app.processIdentifier
-        let appElement = AXUIElementCreateApplication(pid)
+    /// Every process CoreAudio knows about, one audio object each.
+    private static func processObjects() -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr else { return [] }
+        var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &ids) == noErr else { return [] }
+        return ids
+    }
 
-        // Get the focused window
-        var windowValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute as CFString, &windowValue) == .success else {
-            return nil
-        }
-        let window = windowValue as! AXUIElement
+    private static func uint32(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> UInt32? {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr ? value : nil
+    }
 
-        // Search for a text field with role AXTextField that contains a URL-like value
-        func findURLField(in element: AXUIElement) -> String? {
-            var roleValue: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue) == .success,
-               let role = roleValue as? String, role == "AXTextField" {
-                var valueRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
-                   let value = valueRef as? String,
-                   value.contains(".com") || value.contains("http") || value.contains(".") {
-                    return value
-                }
-            }
-
-            var childrenValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-                  let children = childrenValue as? [AXUIElement] else {
-                return nil
-            }
-            for child in children.prefix(20) { // limit depth
-                if let url = findURLField(in: child) { return url }
-            }
-            return nil
-        }
-
-        return findURLField(in: window)
+    private static func bundleID(_ object: AudioObjectID) -> String? {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyBundleID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr,
+              let id = value?.takeRetainedValue() as String?, !id.isEmpty else { return nil }
+        return id
     }
 
     /// Check if any window title matches a browser-based meeting.
@@ -230,44 +170,6 @@ final class MeetingDetector {
                     if lowered.contains("whereby.com") { return "Whereby" }
                     return "Video Call"
                 }
-            }
-        }
-        return nil
-    }
-
-    /// Check if any window title matches a video site. Returns (siteName, videoTitle?).
-    /// For sites with a `playingPrefix` (e.g. YouTube's "▶"), only matches when the prefix is present.
-    private func matchVideoSite(in titles: [String]) -> (String, String?)? {
-        for title in titles {
-            let lowered = title.lowercased()
-            for rule in Self.videoSiteRules {
-                guard lowered.contains(rule.urlPattern) || title.contains(rule.urlPattern) else {
-                    continue
-                }
-
-                // If rule has a playing prefix, only match when video is actively playing.
-                if let prefix = rule.playingPrefix {
-                    guard title.hasPrefix(prefix) else { continue }
-                    // Extract video title: "▶ How to Cook Pasta - YouTube" → "How to Cook Pasta"
-                    let stripped = String(title.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-                    let videoTitle = stripped
-                        .replacingOccurrences(of: " - YouTube", with: "")
-                        .replacingOccurrences(of: " - Vimeo", with: "")
-                        .replacingOccurrences(of: " on Vimeo", with: "")
-                        .replacingOccurrences(of: " - Dailymotion", with: "")
-                        .trimmingCharacters(in: .whitespaces)
-                    return (rule.siteName, videoTitle.isEmpty ? nil : videoTitle)
-                }
-
-                // No prefix required — site URL in title is enough.
-                // Try to extract a video title by removing the site name suffix.
-                let videoTitle = title
-                    .replacingOccurrences(of: " | Loom", with: "")
-                    .replacingOccurrences(of: " - Loom", with: "")
-                    .replacingOccurrences(of: " - Twitch", with: "")
-                    .replacingOccurrences(of: " - Netflix", with: "")
-                    .trimmingCharacters(in: .whitespaces)
-                return (rule.siteName, videoTitle == title ? nil : videoTitle)
             }
         }
         return nil

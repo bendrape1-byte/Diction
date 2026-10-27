@@ -78,6 +78,7 @@
 		C54F09E5E2BAA930626E855C /* SpeechTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2CC027B53AAE03079D78761 /* SpeechTranscriber.swift */; };
 		C6F4C6C95E2835A2EEB58861 /* MeetingHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 648497BCB18036D3B10EADD2 /* MeetingHistory.swift */; };
 		CBDE26BEEBD0419A73D09DFC /* OCRRequestFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = E45DE13042196F9DF2445E66 /* OCRRequestFactory.swift */; };
+		A1C0DE5E7A99C0A7E0000002 /* AppContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1C0DE5E7A99C0A7E0000001 /* AppContext.swift */; };
 		CC795C47BAF8CEF62790BAFF /* LocalLLMCleanupBackend.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDE96F13974B4DC0EEB3C17E /* LocalLLMCleanupBackend.swift */; };
 		CE62853358A180E54150BCA4 /* OnboardingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0EBA7ECAEFCAC714F83C2C5 /* OnboardingWindow.swift */; };
 		D0C9E92678ECFF9228D0B7F0 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 51FBB4B31E8E9293DC11143E /* WhisperKit */; };
@@ -182,6 +183,7 @@
 		BA57E9C267251FC86A8C8672 /* PhysicalKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalKey.swift; sourceTree = "<group>"; };
 		BB052D817F3005B509E9D479 /* DebugLogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogStore.swift; sourceTree = "<group>"; };
 		BD317A8D8E749E5596734DB7 /* SpeechModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechModelCatalog.swift; sourceTree = "<group>"; };
+		A1C0DE5E7A99C0A7E0000001 /* AppContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppContext.swift; sourceTree = "<group>"; };
 		BDE96F13974B4DC0EEB3C17E /* LocalLLMCleanupBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalLLMCleanupBackend.swift; sourceTree = "<group>"; };
 		C01C000BF0DFBCCCF549921A /* ShortcutCaptureState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutCaptureState.swift; sourceTree = "<group>"; };
 		C297C5F9DF753732CD01C5B1 /* MediaPlaybackController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaPlaybackController.swift; sourceTree = "<group>"; };
@@ -332,6 +334,7 @@
 		6A2ED16C65A7A2047D1F84F6 /* Cleanup */ = {
 			isa = PBXGroup;
 			children = (
+				A1C0DE5E7A99C0A7E0000001 /* AppContext.swift */,
 				2F8EC51C74573DD4A47E1CEB /* CleanupBackend.swift */,
 				948064EDD38AFB0872A99BD6 /* CleanupPromptBuilder.swift */,
 				0065F99395EEC3EB77997C2C /* CleanupSettings.swift */,
@@ -555,6 +558,7 @@
 				31E37E3EDDB8A0E5011BCA54 /* DictionApp.swift in Sources */,
 				BF329CF451CC34A3B74348CC /* HotkeyMonitor.swift in Sources */,
 				77089185C9C0C0EDC4536F0A /* KeyChord.swift in Sources */,
+				A1C0DE5E7A99C0A7E0000002 /* AppContext.swift in Sources */,
 				CC795C47BAF8CEF62790BAFF /* LocalLLMCleanupBackend.swift in Sources */,
 				FCEE3C748338E66F1246B917 /* MediaPlaybackController.swift in Sources */,
 				47B377ADA2B2F12226744122 /* MeetingDetector.swift in Sources */,

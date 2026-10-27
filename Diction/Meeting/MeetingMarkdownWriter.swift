@@ -1,9 +1,9 @@
 import Foundation
 
-/// Writes a MeetingTranscript to a markdown file in a date-organized directory.
+/// Writes a MeetingTranscript to "<base>/2026-10-27 Weekly sync.md", one flat folder that INDEX.md lists.
 struct MeetingMarkdownWriter {
 
-    /// Writes the transcript to a markdown file, creating date subdirectories as needed.
+    /// Writes the transcript to a markdown file named after its day and title, then rebuilds INDEX.md.
     /// If `existingFileURL` is provided, overwrites that file instead of creating a new one.
     /// Returns the URL of the written file.
     @MainActor
@@ -12,16 +12,14 @@ struct MeetingMarkdownWriter {
         if let existing = existingFileURL {
             fileURL = existing
         } else {
-            let dateFolder = dateFolderName(for: transcript.startDate)
-            let directory = baseDirectory.appendingPathComponent(dateFolder)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-            let fileName = slugify(transcript.meetingName) + ".md"
-            fileURL = deduplicatedFileURL(directory: directory, fileName: fileName)
+            try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
+            let fileName = dateFolderName(for: transcript.startDate) + " " + fileSafe(transcript.meetingName) + ".md"
+            fileURL = deduplicatedFileURL(directory: baseDirectory, fileName: fileName)
         }
 
         let markdown = renderMarkdown(transcript: transcript)
         try markdown.write(to: fileURL, atomically: true, encoding: .utf8)
+        MeetingHistory.rebuildIndex(in: baseDirectory)
 
         return fileURL
     }
@@ -36,42 +34,29 @@ struct MeetingMarkdownWriter {
         return renderMeetingMarkdown(transcript: transcript)
     }
 
+    /// Front matter an agent can read without opening the transcript, then the summary and the transcript.
     @MainActor
     private static func renderMeetingMarkdown(transcript: MeetingTranscript) -> String {
         var lines: [String] = []
 
+        let iso = ISO8601DateFormatter()
+        iso.timeZone = .current
+        let attendees = transcript.attendees.map { $0.declined ? "\($0.name) (declined)" : $0.name }
+        let description = (transcript.meetingDescription ?? transcript.meetingName)
+            .components(separatedBy: .newlines).joined(separator: " ")
+        lines.append("---")
+        lines.append("date: \(iso.string(from: transcript.startDate))")
+        lines.append("duration: \(transcript.formattedDuration)")
+        lines.append("attendees: \(yaml(attendees))")
+        lines.append("description: \(yaml(description))")
+        if let importedFrom = transcript.importedFrom {
+            lines.append("imported_from: \(importedFrom)")
+        }
+        lines.append("---")
+        lines.append("")
+
         // Title
         lines.append("# \(transcript.meetingName)")
-        lines.append("")
-
-        // Metadata
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateStyle = .medium
-        dateFormatter.timeStyle = .short
-
-        let startStr = dateFormatter.string(from: transcript.startDate)
-        if let endDate = transcript.endDate {
-            let endTimeFormatter = DateFormatter()
-            endTimeFormatter.timeStyle = .short
-            let endStr = endTimeFormatter.string(from: endDate)
-            lines.append("**Date:** \(startStr) — \(endStr)")
-        } else {
-            lines.append("**Date:** \(startStr) (in progress)")
-        }
-        if !transcript.attendees.isEmpty {
-            let formatted = transcript.attendees.map { $0.declined ? "\($0.name) (declined)" : $0.name }
-            lines.append("**Attendees:** \(formatted.joined(separator: ", "))")
-        }
-        lines.append("")
-
-        // Notes
-        lines.append("## Notes")
-        lines.append("")
-        if transcript.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("*No notes.*")
-        } else {
-            lines.append(transcript.notes)
-        }
         lines.append("")
 
         // Summary (if present, e.g. from AI generation)
@@ -79,6 +64,14 @@ struct MeetingMarkdownWriter {
             lines.append("## Summary")
             lines.append("")
             lines.append(summary)
+            lines.append("")
+        }
+
+        // Notes, only when someone wrote some
+        if !transcript.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("## Notes")
+            lines.append("")
+            lines.append(transcript.notes)
             lines.append("")
         }
 
@@ -98,6 +91,12 @@ struct MeetingMarkdownWriter {
         lines.append("")
 
         return lines.joined(separator: "\n")
+    }
+
+    /// A JSON string or array is also valid YAML, and quoting keeps a ":" or "#" in a title from breaking it.
+    private static func yaml(_ value: Any) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .withoutEscapingSlashes])
+        return data.map { String(decoding: $0, as: UTF8.self) } ?? "\"\""
     }
 
     @MainActor
@@ -158,6 +157,8 @@ struct MeetingMarkdownWriter {
         var importedFrom: String?
         var sourceURL: String?
         var parsedStartDate: Date?
+        var parsedDuration: TimeInterval?
+        var description: String?
         var attendees: [MeetingAttendee] = []
         var inFrontmatter = false
         var frontmatterSeen = false
@@ -193,6 +194,12 @@ struct MeetingMarkdownWriter {
                 }
                 if line.hasPrefix("attendees:") {
                     attendees = parseFrontmatterAttendees(line)
+                }
+                if line.hasPrefix("description:") {
+                    description = stripWrappingQuotes(String(line.dropFirst("description:".count)))
+                }
+                if line.hasPrefix("duration:") {
+                    parsedDuration = parseDuration(String(line.dropFirst("duration:".count)))
                 }
                 continue
             }
@@ -251,6 +258,8 @@ struct MeetingMarkdownWriter {
         }
 
         let transcript = MeetingTranscript(meetingName: title, startDate: parsedStartDate ?? Date())
+        transcript.endDate = parsedDuration.map { transcript.startDate.addingTimeInterval($0) }
+        transcript.meetingDescription = description
         transcript.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         transcript.attendees = attendees
         let trimmedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -265,7 +274,19 @@ struct MeetingMarkdownWriter {
         return transcript
     }
 
-    private static func parseFrontmatterDate(_ value: String) -> Date? {
+    /// "1h 12m" or "45m", as `formattedDuration` writes it.
+    private static func parseDuration(_ value: String) -> TimeInterval? {
+        let parts = value.split(separator: " ")
+        guard !parts.isEmpty else { return nil }
+        var seconds: TimeInterval = 0
+        for part in parts {
+            guard let number = Double(part.dropLast()) else { return nil }
+            seconds += part.hasSuffix("h") ? number * 3600 : number * 60
+        }
+        return seconds
+    }
+
+    static func parseFrontmatterDate(_ value: String) -> Date? {
         let trimmed = stripWrappingQuotes(value.trimmingCharacters(in: .whitespacesAndNewlines))
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -344,7 +365,7 @@ struct MeetingMarkdownWriter {
         return fields
     }
 
-    private static func stripWrappingQuotes(_ value: String) -> String {
+    static func stripWrappingQuotes(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 2,
               trimmed.first == "\"",
@@ -582,34 +603,21 @@ struct MeetingMarkdownWriter {
 
     // MARK: - Helpers
 
-    /// Formats a date as "2026-04-07" for folder names.
+    /// Formats a date as "2026-04-07" for file names.
     private static func dateFolderName(for date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
     }
 
-    /// Converts a meeting name to a file-safe slug.
-    /// "Design Review @ 10am" → "design-review-at-10am"
-    static func slugify(_ name: String) -> String {
-        let lowered = name.lowercased()
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-"))
-        let replaced = lowered.unicodeScalars.map { scalar in
-            allowed.contains(scalar) ? String(scalar) : "-"
-        }.joined()
-
-        // Collapse multiple dashes, trim edges.
-        let collapsed = replaced.replacingOccurrences(
-            of: "-{2,}",
-            with: "-",
-            options: .regularExpression
-        )
-        let trimmed = collapsed.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-
-        return trimmed.isEmpty ? "meeting" : trimmed
+    /// The title as a file name: no "/" or ":" (Finder shows a ":" as "/"), one line, at most 80 characters.
+    static func fileSafe(_ name: String) -> String {
+        let cleaned = name.components(separatedBy: CharacterSet(charactersIn: "/:\\").union(.newlines)).joined(separator: " ")
+            .split(separator: " ").joined(separator: " ")
+        return cleaned.isEmpty ? "Meeting" : String(cleaned.prefix(80))
     }
 
-    /// If "design-review.md" already exists, returns "design-review-2.md", etc.
+    /// If "2026-10-27 Sync.md" already exists, returns "2026-10-27 Sync 2.md", etc.
     private static func deduplicatedFileURL(directory: URL, fileName: String) -> URL {
         let base = (fileName as NSString).deletingPathExtension
         let ext = (fileName as NSString).pathExtension
@@ -618,7 +626,7 @@ struct MeetingMarkdownWriter {
         var counter = 2
 
         while FileManager.default.fileExists(atPath: candidate.path) {
-            let newName = "\(base)-\(counter).\(ext)"
+            let newName = "\(base) \(counter).\(ext)"
             candidate = directory.appendingPathComponent(newName)
             counter += 1
         }

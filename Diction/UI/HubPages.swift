@@ -12,7 +12,6 @@ struct NotesPage: View {
     @State private var transcript: MeetingTranscript?
 
     private var saveDir: URL { MeetingTranscriptSettings.loadSaveDirectory() ?? MeetingTranscriptSettings.defaultSaveDirectory() }
-    private static let folderFormat: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f }()
 
     var body: some View {
         Group {
@@ -98,13 +97,11 @@ struct NotesPage: View {
     }
 
     private func reload() {
-        entries = MeetingHistory.loadEntries(from: saveDir).flatMap(\.entries)
+        entries = MeetingHistory.loadEntries(from: saveDir)
     }
 
-    /// The day only: imported meetings carry the import time as their file date, not the meeting's.
     private func meta(_ entry: MeetingHistoryEntry) -> String {
-        Self.folderFormat.date(from: entry.dateFolder)?.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
-            ?? entry.dateFolder
+        entry.date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
     }
 
     private func markdown(_ s: String) -> AttributedString {
@@ -198,6 +195,10 @@ final class MeetingPromptController {
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window = w
+        // ignored for 5 s = not now; the next call in that app asks again
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self, weak w] in
+            if let w, self?.window === w { self?.close() }
+        }
     }
 
     private func close() {

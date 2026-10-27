@@ -207,6 +207,21 @@ final class MeetingSession: ObservableObject {
         // Final save with end date.
         autoSave()
 
+        if transcript.segments.isEmpty, let fileURL {
+            // nothing was said: don't leave an empty meeting behind
+            try? FileManager.default.removeItem(at: fileURL)
+            MeetingHistory.rebuildIndex(in: saveDirectory)
+            self.fileURL = nil
+        } else if let key = AnthropicCleanupBackend.apiKey {
+            // nil without a key or with "Local only": the file keeps its title as the description and has no summary
+            do {
+                try await MeetingSummarizer.summarize(transcript, key: key)
+                autoSave()
+            } catch {
+                print("MeetingSession: summary failed — \(error.localizedDescription)")
+            }
+        }
+
         autoSaveTimer?.invalidate()
         autoSaveTimer = nil
         silenceCheckTimer?.invalidate()
@@ -594,30 +609,23 @@ final class MeetingSession: ObservableObject {
         }
     }
 
+    /// Only for notes started from the "a call started" prompt: they end when the call's app lets go of the mic.
     private var supportsAutomaticEndDetection: Bool {
-        detectedMeetingAppName == "Zoom" &&
-            (detectedMeetingBundleIdentifier?.hasPrefix("us.zoom.") ?? false)
+        detectedMeetingBundleIdentifier != nil
     }
 
     private func checkForMeetingEnd() {
-        guard isActive,
-              let detectedMeetingAppName,
-              let detectedMeetingBundleIdentifier else { return }
+        guard isActive, let detectedMeetingBundleIdentifier else { return }
 
-        guard let meetingApp = NSRunningApplication.runningApplications(withBundleIdentifier: detectedMeetingBundleIdentifier).first else {
-            requestAutomaticStop(reason: "Zoom is no longer running")
-            return
-        }
-
-        let titles = AccessibilityWindowTitles.all(for: meetingApp)
-        if MeetingWindowHeuristics.indicatesActiveMeeting(in: titles, appName: detectedMeetingAppName) {
+        if MeetingDetector.appsUsingMicrophone().contains(detectedMeetingBundleIdentifier) {
             inactiveMeetingPollCount = 0
             return
         }
 
+        // Polls every 5 s; stopping on the third miss in a row gives brief mic drops at least 10 s to come back.
         inactiveMeetingPollCount += 1
-        guard inactiveMeetingPollCount >= 2 else { return }
-        requestAutomaticStop(reason: "meeting windows no longer look active")
+        guard inactiveMeetingPollCount >= 3 else { return }
+        requestAutomaticStop(reason: "\(detectedMeetingAppName ?? detectedMeetingBundleIdentifier) released the microphone")
     }
 
     private func requestAutomaticStop(reason: String) {

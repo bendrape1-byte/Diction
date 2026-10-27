@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import Security
 
 final class LocalLLMCleanupBackend: CleanupBackend {
@@ -17,7 +17,8 @@ final class LocalLLMCleanupBackend: CleanupBackend {
 /// Needs the API key in the macOS Keychain, service "anthropic-api-key"; without it, it behaves exactly like the
 /// local backend. The instructions are `defaultPrompt`, unless ~/Library/Application Support/Diction/haiku_prompt.txt
 /// exists (for example the same rules plus a few of your own dictations as examples).
-/// Only the transcript and the on-screen context leave the Mac; audio never does.
+/// Only the transcript, the target app's name and window title, and the on-screen context leave the Mac;
+/// audio never does.
 final class AnthropicCleanupBackend: CleanupBackend {
     private let fallback: CleanupBackend
     // shared, so warmUp() and the real cleanup reuse the same open connection
@@ -30,7 +31,7 @@ final class AnthropicCleanupBackend: CleanupBackend {
     private static var storedKey: String? = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
         ?? readKeychain(service: "anthropic-api-key")
     private static let keyLock = NSLock()  // Settings can replace the key while a cleanup reads it
-    private static var apiKey: String? { localOnly ? nil : keyLock.withLock { storedKey } }  // nil: the local model cleans up
+    static var apiKey: String? { localOnly ? nil : keyLock.withLock { storedKey } }  // nil: the local model cleans up
     static var hasAPIKey: Bool { keyLock.withLock { storedKey } != nil }
     static let localOnlyDefaultsKey = "localCleanupOnly"
     /// "Local only", chosen in the first-run window or in Settings: Haiku is never asked, not even to warm up,
@@ -43,6 +44,9 @@ final class AnthropicCleanupBackend: CleanupBackend {
     // the request prefetch() sent at a pause in speech, keyed by its exact content
     private static let earlyLock = NSLock()
     private static var early: (key: String, answer: Task<String, Error>)?
+    // the app the dictation goes to, read at recording start (AppContext)
+    private static let contextLock = NSLock()
+    private static var appContext: (category: AppContext.Category, line: String)?
 
     init(fallback: CleanupBackend) {
         self.fallback = fallback
@@ -70,6 +74,17 @@ final class AnthropicCleanupBackend: CleanupBackend {
             let input = "<USER-INPUT>\nok\n</USER-INPUT>"
             _ = try? await callHaiku(key: key, system: systemPrompt, user: input, input: input)
             log("warm-up", start)
+        }
+    }
+
+    /// Called when recording starts. Off the main thread: Accessibility waits for the target app,
+    /// and a hung app would hold up the recording start.
+    @MainActor static func readAppContext() {
+        contextLock.withLock { appContext = nil }
+        guard let app = NSWorkspace.shared.frontmostApplication else { return }
+        Task.detached {
+            let context = AppContext.read(app)
+            contextLock.withLock { appContext = context }
         }
     }
 
@@ -104,6 +119,19 @@ final class AnthropicCleanupBackend: CleanupBackend {
             end with a colon; what follows the list continues as normal text after an empty line. Drop the "and"
             before the last item and the commas between items.
           - Put quotation marks around a title the speaker names, such as the video, song or file called X.
+        - The message may name the app the text goes to (its window title, a category). Use it for the form only:
+          punctuation, capitalization, paragraphs and lists, how file names and commands are written. Never change
+          words, formality or form of address for it, and never add a greeting or sign-off.
+          - email: full sentences with punctuation, paragraphs as above.
+          - chat: a message, often short. Leave out the period after the last sentence (keep ? and !).
+          - agent (terminals, coding tools, AI chat apps): mostly prompts for a coding agent. Write file names, paths,
+            flags, commands and code identifiers exactly as they would be typed. When the whole dictation is a shell
+            command, return only the command: "cd slash users slash alex mar slash projects slash notes" becomes
+            "cd /Users/alexmar/projects/notes". A name spoken as two words ("alex mar") is one word in a path. When
+            the spoken name sounds like the user name given, write that user name; keep any other name as spoken.
+            A terminal's window title often shows its current folder.
+          - docs: full sentences, paragraphs and lists as above.
+          - other: the rules above, nothing more.
         - Change nothing else. Short fragments stay short.
         Return JSON: {"text": "<cleaned text>"}
 
@@ -133,15 +161,17 @@ final class AnthropicCleanupBackend: CleanupBackend {
 
     func clean(text: String, prompt: String, modelKind: LocalCleanupModelKind?) async throws -> String {
         let start = Date()
+        let category = Self.contextLock.withLock { Self.appContext?.category ?? .other }
+        func log(_ message: String) { Self.log("\(message) [\(category.rawValue)]", start) }
         let spoken = Self.spoken(text)
         // Haiku made 1-3-word dictations slightly worse in the cleanup benchmark (7.4 % vs 6.2 % characters
         // wrong without it) and costs ~1.4 s, so they're pasted as transcribed.
         if Self.isShort(spoken) {
-            Self.log("skipped: 3 words or fewer", start)
+            log("skipped: 3 words or fewer")
             return spoken
         }
         guard let key = Self.apiKey else {
-            Self.log("local: no API key (Keychain denied or empty)", start)
+            log("local: no API key (Keychain denied or empty)")
             return try await fallback.clean(text: text, prompt: prompt, modelKind: modelKind)
         }
         let system = Self.systemPrompt
@@ -149,10 +179,10 @@ final class AnthropicCleanupBackend: CleanupBackend {
         if let early = Self.takeEarly(key: system + user) {
             do {
                 let cleaned = try await early.value
-                Self.log("haiku ok (asked at a pause)", start)
+                log("haiku ok (asked at a pause)")
                 return cleaned
             } catch let error as CleanupBackendError {
-                Self.log("haiku unusable output, raw transcript pasted", start)
+                log("haiku unusable output, raw transcript pasted")
                 throw error
             } catch {
                 // the early request failed (offline, timeout): ask again below, with the local fallback
@@ -160,13 +190,13 @@ final class AnthropicCleanupBackend: CleanupBackend {
         }
         do {
             let cleaned = try await Self.callHaiku(key: key, system: system, user: user, input: text)
-            Self.log("haiku ok", start)
+            log("haiku ok")
             return cleaned
         } catch let error as CleanupBackendError {
-            Self.log("haiku unusable output, raw transcript pasted", start)
+            log("haiku unusable output, raw transcript pasted")
             throw error  // Haiku answered but the text is unusable: TextCleaner pastes the raw transcript
         } catch {
-            Self.log("local: haiku failed (\(error.localizedDescription))", start)
+            log("local: haiku failed (\(error.localizedDescription))")
             return try await fallback.clean(text: text, prompt: prompt, modelKind: modelKind)  // offline, timeout, HTTP error
         }
     }
@@ -203,7 +233,10 @@ final class AnthropicCleanupBackend: CleanupBackend {
         let medium = UserDefaults.standard.bool(forKey: "cleanupMedium")
             ? "\n\nCleanup level: medium. Also edit for clarity and conciseness: drop repetition and tighten wordy sentences, keep the meaning and the language."
             : ""
-        return "\(context)\(medium)\n\n\(text)"
+        // the target app goes here too, not into the system prompt: the same for the early request and the one
+        // at release (read once per recording), and the cached rules stay untouched
+        let app = contextLock.withLock { appContext.map { "\n\n\($0.line)" } ?? "" }
+        return "\(context)\(medium)\(app)\n\n\(text)"
     }
 
     /// The dictation without the <USER-INPUT> tags TextCleaner wraps it in.
@@ -246,8 +279,7 @@ final class AnthropicCleanupBackend: CleanupBackend {
                     "required": ["text"], "additionalProperties": false,
                 ]],
             ],
-            // the prompt never changes, so it's cached after the first call; the built-in rules alone are
-            // under Haiku's 512-token minimum and simply aren't cached (no error)
+            // the prompt never changes, so it's cached after the first call (the built-in rules: 1,613 tokens)
             "system": [["type": "text", "text": system, "cache_control": ["type": "ephemeral"]]],
             "messages": [["role": "user", "content": user]],
         ]
@@ -262,7 +294,9 @@ final class AnthropicCleanupBackend: CleanupBackend {
 
         // same guard as the benchmark: empty, or far longer/shorter than what was said = something went wrong
         let ratio = Double(cleaned.count) / Double(max(spoken(input).count, 1))
-        let shortest = UserDefaults.standard.bool(forKey: "cleanupMedium") ? 0.45 : 0.7  // medium cleanup is meant to shorten
+        // medium cleanup is meant to shorten, and so are spoken commands ("cd slash users slash" -> "cd /Users/")
+        let agent = contextLock.withLock { appContext?.category == .agent }
+        let shortest = UserDefaults.standard.bool(forKey: "cleanupMedium") || agent ? 0.45 : 0.7
         guard !cleaned.isEmpty, (shortest...1.3).contains(ratio) else { throw CleanupBackendError.unusableOutput(rawOutput: raw) }
         return dropFillers(cleaned)
     }

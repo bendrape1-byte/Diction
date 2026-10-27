@@ -365,6 +365,7 @@ class AppState: ObservableObject {
 
     /// Called once at launch: first-run setup (or the permission step when one is missing), else straight to the hub.
     func start() async {
+        MeetingHistory.migrateOldLayout(in: MeetingTranscriptSettings.effectiveSaveDirectory())
         let onboarded = UserDefaults.standard.bool(forKey: "onboardingCompleted")
         if !onboarded || !Self.hasAllPermissions {
             onboardingController.show(appState: self, startAtPermissions: onboarded) { [weak self] in self?.showHub() }
@@ -660,6 +661,7 @@ class AppState: ObservableObject {
             earlyStart = nil
             try audioRecorder.startRecording()
             AnthropicCleanupBackend.warmUp()  // ready by the time the key is released
+            AnthropicCleanupBackend.readAppContext()  // which app the text goes to, for the cleanup
             debugLogStore.record(category: .hotkey, message: "Recording started.")
             soundEffects.playStart()
             overlay.show(message: .recording)
